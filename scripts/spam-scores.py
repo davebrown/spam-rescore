@@ -13,6 +13,7 @@ from email.parser import Parser as EmailParser
 import re
 import rfc822
 from collections import Counter
+from subprocess import Popen, PIPE
 
 TTY = sys.stdout.isatty()
 
@@ -195,16 +196,53 @@ def hostAndIp(rcvd):
     ip = m.group(2)
   return host, ip
 
+def wout(s):
+  if s != None:
+    sys.stdout.write('__exec_out__:')
+    sys.stdout.write(s)
+
+def werr(s):
+  if s != None:
+    sys.stdout.write('__exec_err__:')
+    sys.stdout.write(s)
+  
+def run_sa(msg):
+  proc = Popen(['sed', '-E', 's/score=([0-9]+\.[0-9]+)/score=3.14159/g'], stdout=PIPE, stdin=PIPE, stderr=PIPE)
+  try:
+    outStr, errStr = proc.communicate(input=msg['headers'])
+    wout(outStr)
+    werr(errStr)
+    #proc.stdin.close()
+    for line in proc.stderr:
+      werr(line)
+    for line in proc.stdout:
+      wout(line)
+    
+    #outStr, errStr = proc.communicate()
+    #wout(outStr)
+    #werr(outStr)
+  except ValueError as ve:
+    warn('got ValueError', ve)
+  finally:
+    warn('waiting...')
+    ret = proc.wait()
+  info('sa-run returned %d' % ret)
+  
 def cmd_rescore():
   def cback(msgs):
     print msgs
   msgs, _ = iterMessages(cback, ['BODY[TEXT]'])
   print '================'
   for m in msgs:
-    print m['headers']
+    headers = m['headers']
+    #scoreHeader = headers.get('X-Spam-Status', None)
+    print '**Subject: %s' % m.headers.get('Subject', None)
+    print '**Score %f' % m.score
+    print headers
     print '---------------'
-    print m['body[text]']
-    print '==============='
+    #print m['body[text]']
+    #print '==============='
+  run_sa(msgs[0])
   
 def cmd_received():
   hosts = Counter()
@@ -250,9 +288,23 @@ def cmd_hack():
   info('hack running')
   host, ip = hostAndIp('from sertcell.date (unknown [193.124.186.130])')
   print host, ip
-  
+
+COMMANDS = [
+  cmd_rescore,
+  cmd_received,
+  cmd_stats,
+  cmd_hack
+]
+
 def main():
   global ARGS
+  validCommands = ''
+  #for c in COMMANDS:
+  for c in COMMANDS:
+    if validCommands != '':
+      validCommands = validCommands + ' | '
+    validCommands = validCommands + ' ' + c.__name__[4:].replace('_', '-')
+  
   parser = argparse.ArgumentParser(
     description='spam scores',
     epilog='figure out near-miss spam score threshold',
@@ -263,12 +315,19 @@ def main():
   parser.add_argument('-n', '--num', help='number of messages to examine', default=400)
   parser.add_argument('-m', '--mailbox', help='specify mailbox', default='INBOX')
   #parser.add_argument('-u', '--url', help='url of remote server', default='http://localhost:9080')
-  parser.add_argument('command', help='hack | spam-score')
-  parser.add_argument('args', nargs='*')
+  parser.add_argument('command', help=validCommands)
+  parser.add_argument('args', nargs='*', help='command-specific arguments')
   ARGS = parser.parse_args()
   info('verbose is: ', ARGS.verbose)
   verbose("got args %s" % str(ARGS))
   cmd = ARGS.command.replace('-', '_')
+  func = None
+  for f in COMMANDS:
+    if cmd == f.__name__[4:]:
+      func = f
+      break
+  if func is None:
+    fail('unrecognized command %s. valid commands are %s' % (cmd, validCommands))
   try:
     verbose('calling "cmd_' + cmd + '"')
     func = eval('cmd_' + cmd)
