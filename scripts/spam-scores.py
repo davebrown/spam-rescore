@@ -13,7 +13,10 @@ from email.parser import Parser as EmailParser
 import re
 import rfc822
 from collections import Counter
-from subprocess import Popen, PIPE
+from subprocess import STDOUT, check_output
+import yaml
+from tempfile import TemporaryFile
+from time import sleep
 
 TTY = sys.stdout.isatty()
 
@@ -55,6 +58,61 @@ def verbose(*args):
     sys.stdout.write('\n')
     sys.stdout.flush()
 
+def _(data, name, required=True):
+  ret = data.get(name, None)
+  if not ret and required:
+    raise Exception('missing required config field "%s"' % name)
+  return ret
+
+class Account:
+  email = None
+  username = None
+  password = None
+  host = None
+  disableCert = False
+
+  def __init__(self, data):
+    self.email = _(data, 'email')
+    self.password = _(data, 'password')
+    self.host = _(data, 'host', False)
+    account = self.email.split('@')
+    if len(account) != 2:
+      raise Exception('invalid email address "%s"' % self.email)
+    self.username = account[0]
+    if not self.host:
+      self.host = account[1]
+
+  def __str__(self):
+    return '{Account %s username=%s host=%s}' % (self.email, self.username, self.host)
+  
+class Config:
+  accounts = None
+
+  def __init__(self, data):
+    accts = data.get('accounts', None)
+    if accts is None:
+      raise Exception('no accounts in config')
+    self.accounts = [ Account(a) for a in accts ]
+    print 'CTOR', self.accounts
+
+DEFAULT_CONFIG = {
+  'accounts': []
+}
+def loadConfig(filename):
+  if os.path.isfile(filename):
+    with open(filename, 'r') as f:
+      conf = yaml.safe_load(f)
+      config = Config(conf)
+  elif len(ARGS.args) == 2:
+    verbose('config file %s not found, using command-line args' % filename)
+    conf = DEFAULT_CONFIG
+    conf['accounts'].append({'email': ARGS.args[0], 'password': ARGS.args[1] })
+    config = Config(conf)
+  else:
+    fail('config file %s not found and email-address/password not passed on command line. -h for "help"' % filename)
+
+  return config
+  
 SCORE_PAT = re.compile('.*score=([-+]?[0-9]*\.?[0-9]*).*')
 REQUIRED_PAT = re.compile('.*required=([0-9]*\.?[0-9]*).*')
 
@@ -121,17 +179,10 @@ def stats(msgs):
     maxval = max(maxval, m.score)
   return len(msgs), minval, maxval, median(nums), mean(nums)
 
-def iterMessages(callback, additionalFields=[]):
-  args = ARGS.args
-  verbose('fetch', args)
-  if len(args) != 2:
-    fail('usage: fetch <user>@<host> <password>')
-  account = args[0].split('@')
-  if len(account) != 2:
-    fail('invalid email address: %s' % args[0])
-  username = account[0]
-  host = account[1]
-  password = args[1]
+def iterMessages(account, callback, additionalFields=[]):
+  username = account.username
+  host = account.host
+  password = account.password
 
   # FIXME: cert chain not trusted for some reason
   context = imapclient.create_default_context()
@@ -155,16 +206,11 @@ def iterMessages(callback, additionalFields=[]):
   parser = EmailParser()
   msgs = []
   for msgId, data in messages.iteritems():
-    #print headers
-    #print data
     rawHeaders = data['BODY[HEADER]']
     headers = parser.parsestr(rawHeaders, True)
-    #print type(headers), headers.keys()
     spamHeader = headers.get('X-Spam-Status', None)
     dateHeader = headers.get('Date', None)
     receivedHeader = headers.get('Received', None)
-    if receivedHeader is not None:
-      verbose('Received: %s' % receivedHeader)
     #verbose('%s SCORE %s' % (dateHeader, spamHeader))
     if not dateHeader:
       noDate = noDate + 1
@@ -176,7 +222,7 @@ def iterMessages(callback, additionalFields=[]):
     msg['headers'] = rawHeaders
     for f in additionalFields:
       msg[f.lower()] = data[f]
-      print f, '******', data[f], '******'
+      #print f, '******', data[f], '******'
     msgs.append(msg)
 
   #print type(messages[0])
@@ -196,6 +242,16 @@ def hostAndIp(rcvd):
     ip = m.group(2)
   return host, ip
 
+def run_sa(msg):
+  with TemporaryFile(mode='r+b', suffix='.eml', prefix='spamcheck') as tf:
+    tf.write(msg['headers'])
+    tf.write(msg['body[text]'])
+    tf.seek(0)
+    output = check_output(['sed', '-E', 's/score=([0-9]+\.[0-9]+)/score=3.14159/g'], stdin=tf, stderr=STDOUT)
+    print('sa returned ###%s###' % output)
+    print 'tf is', str(tf), tf.name
+    #sleep(500)
+
 def wout(s):
   if s != None:
     sys.stdout.write('__exec_out__:')
@@ -205,8 +261,9 @@ def werr(s):
   if s != None:
     sys.stdout.write('__exec_err__:')
     sys.stdout.write(s)
+    
+def run_sa_old(msg):
   
-def run_sa(msg):
   proc = Popen(['sed', '-E', 's/score=([0-9]+\.[0-9]+)/score=3.14159/g'], stdout=PIPE, stdin=PIPE, stderr=PIPE)
   try:
     outStr, errStr = proc.communicate(input=msg['headers'])
@@ -223,6 +280,9 @@ def run_sa(msg):
     #werr(outStr)
   except ValueError as ve:
     warn('got ValueError', ve)
+    if ARGS.verbose:
+      traceback.print_exc()
+      
   finally:
     warn('waiting...')
     ret = proc.wait()
@@ -231,18 +291,17 @@ def run_sa(msg):
 def cmd_rescore():
   def cback(msgs):
     print msgs
-  msgs, _ = iterMessages(cback, ['BODY[TEXT]'])
+  msgs, _ = iterMessages(CONFIG.accounts[0], cback, ['BODY[TEXT]'])
   print '================'
   for m in msgs:
     headers = m['headers']
-    #scoreHeader = headers.get('X-Spam-Status', None)
     print '**Subject: %s' % m.headers.get('Subject', None)
     print '**Score %f' % m.score
-    print headers
-    print '---------------'
+    #print headers
+    #print '---------------'
     #print m['body[text]']
     #print '==============='
-  run_sa(msgs[0])
+  run_sa(msgs[len(msgs)-1])
   
 def cmd_received():
   hosts = Counter()
@@ -288,6 +347,7 @@ def cmd_hack():
   info('hack running')
   host, ip = hostAndIp('from sertcell.date (unknown [193.124.186.130])')
   print host, ip
+  fname = os.path.join(os.environ['HOME'], '.spam-config.yaml')
 
 COMMANDS = [
   cmd_rescore,
@@ -298,6 +358,7 @@ COMMANDS = [
 
 def main():
   global ARGS
+  global CONFIG
   validCommands = ''
   #for c in COMMANDS:
   for c in COMMANDS:
@@ -312,12 +373,14 @@ def main():
     )
   HOME = os.environ['HOME']
   parser.add_argument('-v', '--verbose', help='emit verbose output', default=False, action="store_true")
+  parser.add_argument('-c', '--config', help='specify config file', default='%s/.spam-config.yaml' % os.environ['HOME'])
   parser.add_argument('-n', '--num', help='number of messages to examine', default=400)
   parser.add_argument('-m', '--mailbox', help='specify mailbox', default='INBOX')
   #parser.add_argument('-u', '--url', help='url of remote server', default='http://localhost:9080')
   parser.add_argument('command', help=validCommands)
   parser.add_argument('args', nargs='*', help='command-specific arguments')
   ARGS = parser.parse_args()
+  CONFIG = loadConfig(ARGS.config)
   info('verbose is: ', ARGS.verbose)
   verbose("got args %s" % str(ARGS))
   cmd = ARGS.command.replace('-', '_')
@@ -328,15 +391,7 @@ def main():
       break
   if func is None:
     fail('unrecognized command %s. valid commands are %s' % (cmd, validCommands))
-  try:
-    verbose('calling "cmd_' + cmd + '"')
-    func = eval('cmd_' + cmd)
-    verbose('evaluated to ' + str(func))
-    func()
-  except NameError:
-    err("invalid command: '%s'" % cmd)
-    if ARGS.verbose:
-      traceback.print_exc()
+  func()
     
 if __name__ == '__main__':
   main()
