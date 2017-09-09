@@ -13,10 +13,17 @@ from email.parser import Parser as EmailParser
 import re
 import rfc822
 from collections import Counter
-from subprocess import STDOUT, check_output
+from subprocess import STDOUT, check_output, CalledProcessError
 import yaml
 from tempfile import TemporaryFile
 from time import sleep
+from texttable import Texttable
+import logging
+
+logging.basicConfig(
+  format='%(asctime)s - %(levelname)s: %(message)s',
+  level=logging.INFO
+)
 
 TTY = sys.stdout.isatty()
 
@@ -64,7 +71,7 @@ def _(data, name, required=True):
     raise Exception('missing required config field "%s"' % name)
   return ret
 
-class Account:
+class Account(object):
   email = None
   username = None
   password = None
@@ -85,7 +92,7 @@ class Account:
   def __str__(self):
     return '{Account %s username=%s host=%s}' % (self.email, self.username, self.host)
   
-class Config:
+class Config(object):
   accounts = None
 
   def __init__(self, data):
@@ -93,7 +100,6 @@ class Config:
     if accts is None:
       raise Exception('no accounts in config')
     self.accounts = [ Account(a) for a in accts ]
-    print 'CTOR', self.accounts
 
 DEFAULT_CONFIG = {
   'accounts': []
@@ -113,8 +119,8 @@ def loadConfig(filename):
 
   return config
   
-SCORE_PAT = re.compile('.*score=([-+]?[0-9]*\.?[0-9]*).*')
-REQUIRED_PAT = re.compile('.*required=([0-9]*\.?[0-9]*).*')
+SCORE_PAT = re.compile('.*score=([+-]?\d+\.?\d+).*')
+REQUIRED_PAT = re.compile('.*required=(\d+\.?\d+).*')
 
 def scoreFromHeader(header):
   score = None
@@ -126,22 +132,25 @@ def scoreFromHeader(header):
     except ValueError, ve:
       warn('could not parse score float from %s' % (header))
       score = 1.0
+  else:
+    warn('no score pattern match on header: "%s"' % header)
   m = REQUIRED_PAT.match(header)
   if m:
     required = float(m.group(1))
   return score, required
 
-class Msg:
+class Msg(object):
   id = None
   date = None
   score = None
   required = None
   headers = None
   raw = None # full original object from imap client
-  
   def __init__(self, id, spamHeader, dateHeader, headers):
     self.id = id
     self.score, self.required = scoreFromHeader(spamHeader)
+    if self.score is None:
+      warn('no score on msg id=%s header="%s"' % (self.id, spamHeader))
     self.date = datetime.fromtimestamp(rfc822.mktime_tz(rfc822.parsedate_tz(dateHeader)))
     self.headers = headers
     self.data = {}
@@ -179,7 +188,7 @@ def stats(msgs):
     maxval = max(maxval, m.score)
   return len(msgs), minval, maxval, median(nums), mean(nums)
 
-def iterMessages(account, callback, additionalFields=[]):
+def connectIMAP(account):
   username = account.username
   host = account.host
   password = account.password
@@ -190,19 +199,26 @@ def iterMessages(account, callback, additionalFields=[]):
   
   imap = IMAPClient(host, use_uid=True, ssl=True, ssl_context=context) # no one should ever use cleartext these days
   imap.login(username, password)
-  info('logged in!')
-  imap.noop()
-  imap.select_folder(ARGS.mailbox)
+  info('logged in %s' % account.email)
+  return imap
+
+def iterMessages(accountOrClient, callback, additionalFields=[]):
+  doLogout = True
+  if isinstance(accountOrClient, IMAPClient):
+    imap = accountOrClient
+    doLogout = False
+  else:
+    imap = connectIMAP(accountOrClient)
+    imap.select_folder(ARGS.mailbox)
   messageIds = imap.sort(['REVERSE ARRIVAL'])#imap.search()
   info('have %d messages in folder %s' % (len(messageIds), ARGS.mailbox))
   #print messageIds
   fields = ['BODY[HEADER]'] + additionalFields
-  messages = imap.fetch(messageIds[:5], fields)
-#  print messages
-#  print type(messages)
+  # FIXME: honor --num messsages
+  messages = imap.fetch(messageIds[:ARGS.num], fields)
   noDate = 0
   noScore = 0
-  print 'got %d messages' % len(messages)
+  info('got %d messages' % len(messages))
   parser = EmailParser()
   msgs = []
   for msgId, data in messages.iteritems():
@@ -222,11 +238,10 @@ def iterMessages(account, callback, additionalFields=[]):
     msg['headers'] = rawHeaders
     for f in additionalFields:
       msg[f.lower()] = data[f]
-      #print f, '******', data[f], '******'
     msgs.append(msg)
 
-  #print type(messages[0])
-  imap.logout()
+  if doLogout:
+    imap.logout()
   info('logged out')
   ret = callback(msgs)
   return msgs, ret 
@@ -242,66 +257,71 @@ def hostAndIp(rcvd):
     ip = m.group(2)
   return host, ip
 
+SA_SCORE_PAT = re.compile('^([+-]?\d+\.\d+)/.*')
 def run_sa(msg):
   with TemporaryFile(mode='r+b', suffix='.eml', prefix='spamcheck') as tf:
     tf.write(msg['headers'])
     tf.write(msg['body[text]'])
     tf.seek(0)
-    output = check_output(['sed', '-E', 's/score=([0-9]+\.[0-9]+)/score=3.14159/g'], stdin=tf, stderr=STDOUT)
-    print('sa returned ###%s###' % output)
-    print 'tf is', str(tf), tf.name
-    #sleep(500)
+    #output = check_output(['sed', '-E', 's/score=([0-9]+\.[0-9]+)/score=3.14159/g'], stdin=tf, stderr=STDOUT)
+    try:
+      output = check_output(['spamc', '-c'], stdin=tf, stderr=STDOUT)
+    except CalledProcessError as cpe:
+      output = cpe.output.replace('\n', '')
+      verbose('sa returned code=%d body="%s" for message %s' % (cpe.returncode, output, msg.id))
+    m = SA_SCORE_PAT.match(output)
+    if m:
+      score = float(m.group(1))
+      return score
+    else:
+      raise Exception('no score in sa output "%s"' % output)
 
-def wout(s):
-  if s != None:
-    sys.stdout.write('__exec_out__:')
-    sys.stdout.write(s)
-
-def werr(s):
-  if s != None:
-    sys.stdout.write('__exec_err__:')
-    sys.stdout.write(s)
-    
-def run_sa_old(msg):
+def cmd_list():
+  def cback(msgs):
+    pass
   
-  proc = Popen(['sed', '-E', 's/score=([0-9]+\.[0-9]+)/score=3.14159/g'], stdout=PIPE, stdin=PIPE, stderr=PIPE)
-  try:
-    outStr, errStr = proc.communicate(input=msg['headers'])
-    wout(outStr)
-    werr(errStr)
-    #proc.stdin.close()
-    for line in proc.stderr:
-      werr(line)
-    for line in proc.stdout:
-      wout(line)
-    
-    #outStr, errStr = proc.communicate()
-    #wout(outStr)
-    #werr(outStr)
-  except ValueError as ve:
-    warn('got ValueError', ve)
-    if ARGS.verbose:
-      traceback.print_exc()
-      
-  finally:
-    warn('waiting...')
-    ret = proc.wait()
-  info('sa-run returned %d' % ret)
+  msgs, _ = iterMessages(CONFIG.accounts[0], cback)
+  table = Texttable()
+  table.set_deco(Texttable.HEADER)
+  table.add_row(['Date', 'Score', 'From', 'Subject'])
+  table.add_rows([ [m.date, '%.1f' % m.score, m.headers.get('From', None), m.headers.get('Subject', None) ] for m in msgs ])
+  info(table.draw())
   
 def cmd_rescore():
   def cback(msgs):
     print msgs
   msgs, _ = iterMessages(CONFIG.accounts[0], cback, ['BODY[TEXT]'])
   print '================'
+  newSpam = 0
+  unSpam = 0
+  scoreUp = 0
+  scoreDown = 0
+  scoreSame = 0
   for m in msgs:
-    headers = m['headers']
-    print '**Subject: %s' % m.headers.get('Subject', None)
-    print '**Score %f' % m.score
+    #headers = m['headers']
     #print headers
     #print '---------------'
     #print m['body[text]']
     #print '==============='
-  run_sa(msgs[len(msgs)-1])
+    newScore = run_sa(m)
+    if newScore > m.score:
+      scoreUp += 1
+      if newScore > 5.0:
+        newSpam += 1
+    elif newScore < m.score:
+      scoreDown += 1
+      if m.score > 5.0 and newScore < 5.0:
+        unSpam += 1
+    else:
+      scoreSame += 1
+    subject = m.headers.get('Subject', None)
+    info('score went from %.1f to %.1f for %s/"%s"' % (m.score, newScore, m.id, subject))
+  info('OUT of %d message(s):' % ARGS.num)
+  info(' %d new spam' % newSpam)
+  info(' %d dropped below spam threshold' % unSpam)
+  info(' %d score increased' % scoreUp)
+  info(' %d score decreased' % scoreDown)
+  info(' %d score unchanged' % scoreSame)
   
 def cmd_received():
   hosts = Counter()
@@ -319,7 +339,7 @@ def cmd_received():
         hosts[host] += 1
         ips[ip] += 1
       verbose('rcvd: %s / %s' % (host, ip))
-  msgs, _ = iterMessages(cback)
+  msgs, _ = iterMessages(CONFIG.accounts[0], cback)
   for cnt in ips.most_common(10):
     info('%s %d' % (cnt[0], cnt[1]))
   for cnt in hosts.most_common(10):
@@ -334,26 +354,58 @@ def cmd_stats():
       month = months.get(m.month(), [])
       month.append(m)
       months[m.month()] = month
-      info('%s -- %s' % (m.month(), str(m)))
+      verbose('%s -- %s' % (m.month(), str(m)))
 
+    table = Texttable()
+    table.set_deco(Texttable.HEADER)
+    table.set_cols_dtype(['t', 'i', 'f', 'f', 'f', 'f'])
+    table.set_cols_align(['l', 'r', 'r', 'r', 'r', 'r'])
+    table.set_precision(1)
+    table.add_row(['month', 'count', 'min', 'max', 'median', 'mean'])
     for month in sorted(months.keys()):
       msgs = months[month]
       count, minval, maxval, med, avg = stats(msgs)
-      info('%s : %d msgs, min=%f max=%f median=%f mean=%f' % (month, count, minval, maxval, med, avg))
-
-  iterMessages(cback)
+      info('%s : %d msgs, min=%.1f max=%.1f median=%.1f mean=%.1f' % (month, count, minval, maxval, med, avg))
+      table.add_row([month, count, minval, maxval, med, avg])
+    info(table.draw())
+  iterMessages(CONFIG.accounts[0], cback)
   
 def cmd_hack():
   info('hack running')
   host, ip = hostAndIp('from sertcell.date (unknown [193.124.186.130])')
   print host, ip
-  fname = os.path.join(os.environ['HOME'], '.spam-config.yaml')
+  scoreHeader = """No, score=0.0 required=5.0 tests=BAYES_50,HTML_IMAGE_ONLY_16,
+  HTML_MESSAGE,HTML_SHORT_LINK_IMG_2,RP_MATCHES_RCVD,SPF_PASS,T_DKIM_INVALID,
+  URIBL_BLOCKED,URIBL_DBL_SPAM autolearn=no autolearn_force=no version=3.4.1"""
+  score, req = scoreFromHeader(scoreHeader)
+  print 'score', score, 'required', req
+
+  imap = connectIMAP(CONFIG.accounts[0])
+  try:
+    ARGS.mailbox = 'move-src'
+    imap.select_folder(ARGS.mailbox)
+    print type(imap), isinstance(imap, IMAPClient)
+    print type(CONFIG.accounts[0]), isinstance(CONFIG.accounts[0], Account)
+    print imap.capabilities()
+    print '---------------'
+    msgs, _ = iterMessages(imap, lambda x: None)
+    for m in msgs:
+      print str(m)
+    print('----------------')
+    ids = [ m.id for m in msgs ]
+    flags = imap.get_flags(ids)
+    for id in flags.keys():
+      print id, str(flags[id])
+  finally:
+    imap.logout()
+  
 
 COMMANDS = [
   cmd_rescore,
   cmd_received,
   cmd_stats,
-  cmd_hack
+  cmd_hack,
+  cmd_list
 ]
 
 def main():
@@ -374,7 +426,7 @@ def main():
   HOME = os.environ['HOME']
   parser.add_argument('-v', '--verbose', help='emit verbose output', default=False, action="store_true")
   parser.add_argument('-c', '--config', help='specify config file', default='%s/.spam-config.yaml' % os.environ['HOME'])
-  parser.add_argument('-n', '--num', help='number of messages to examine', default=400)
+  parser.add_argument('-n', '--num', help='number of messages to examine', default=400, type=int)
   parser.add_argument('-m', '--mailbox', help='specify mailbox', default='INBOX')
   #parser.add_argument('-u', '--url', help='url of remote server', default='http://localhost:9080')
   parser.add_argument('command', help=validCommands)
