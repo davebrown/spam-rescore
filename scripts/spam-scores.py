@@ -166,7 +166,7 @@ class Msg(object):
     self.data = {}
 
   def __str__(self):
-    return '{Msg: id=%d score=%f date=%s}' % (self.id, self.score, str(self.date))
+    return '{Msg: id=%d score=%s date=%s}' % (self.id, '%.1f' % self.score if self.score is not None else 'None', str(self.date))
 
   def month(self):
     return '%d-%d' % (self.date.year, self.date.month)
@@ -181,21 +181,22 @@ class Msg(object):
     return self.data.get(key, None)
 
 def mean(numbers):
-    return float(sum(numbers)) / max(len(numbers), 1)
+  return float(sum(numbers)) / max(len(numbers), 1)
   
 def median(lst):
-    quotient, remainder = divmod(len(lst), 2)
-    if remainder:
-        return sorted(lst)[quotient]
-    return sum(sorted(lst)[quotient - 1:quotient + 1]) / 2.
+  quotient, remainder = divmod(len(lst), 2)
+  if remainder:
+    return sorted(lst)[quotient]
+  return sum(sorted(lst)[quotient - 1:quotient + 1]) / 2.
   
 def stats(msgs):
   minval = 10.0
   maxval = -10.0
-  nums = [ m.score for m in msgs ]
+  nums = [ m.score if m.score else 0 for m in msgs ]
   for m in msgs:
-    minval = min(minval, m.score)
-    maxval = max(maxval, m.score)
+    if m.score is not None:
+      minval = min(minval, m.score)
+      maxval = max(maxval, m.score)
   return len(msgs), minval, maxval, median(nums), mean(nums)
 
 def connectIMAP(account):
@@ -255,7 +256,6 @@ def iterMessages(accountOrClient, callback, additionalFields=[]):
   msgDict = { m.id: m for m in msgs }
    
   flags = imap.get_flags(messageIds)
-  print 'flags', flags
   for id in flags.keys():
     msgDict[id].flags = flags[id]
   if doLogout:
@@ -311,7 +311,7 @@ def cmd_list():
     table.set_cols_width([20, 10, 6, 30, 30, 12])
     table.set_precision(1)
     for m in msgs:
-      table.add_row([m.date, m.id, '%.1f' % m.score if m.score else 'None', m.headers.get('From', None), m.headers.get('Subject', None), m.flags ])
+      table.add_row([m.date, m.id, '%.1f' % m.score if m.score is not None else 'None', m.headers.get('From', None), m.headers.get('Subject', None), m.flags ])
     info(table.draw())
   finally:
     imap.logout()
@@ -394,7 +394,7 @@ def cmd_stats():
     for month in sorted(months.keys()):
       msgs = months[month]
       count, minval, maxval, med, avg = stats(msgs)
-      info('%s : %d msgs, min=%.1f max=%.1f median=%.1f mean=%.1f' % (month, count, minval, maxval, med, avg))
+      #info('%s : %d msgs, min=%.1f max=%.1f median=%.1f mean=%.1f' % (month, count, minval, maxval, med, avg))
       table.add_row([month, count, minval, maxval, med, avg])
     info(table.draw())
   iterMessages(CONFIG.accounts[0], cback)
