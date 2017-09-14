@@ -2,7 +2,14 @@
 
 import sys
 import os
-from datetime import datetime
+
+# import imapclient from dev
+#sys.path.insert(0, '/Users/dave/code/imapclient/imapclient')
+# import imaplib locally
+#dir_path = os.path.dirname(os.path.realpath(__file__))
+#sys.path.insert(0, dir_path)
+
+from datetime import datetime, timedelta
 import argparse
 import traceback
 from termcolor import cprint
@@ -22,7 +29,7 @@ import logging
 
 logging.basicConfig(
   format='%(asctime)s - %(levelname)s: %(message)s',
-  level=logging.INFO
+  level=logging.DEBUG
 )
 
 TTY = sys.stdout.isatty()
@@ -123,6 +130,8 @@ SCORE_PAT = re.compile('.*score=([+-]?\d+\.?\d+).*')
 REQUIRED_PAT = re.compile('.*required=(\d+\.?\d+).*')
 
 def scoreFromHeader(header):
+  if header is None:
+    return None, None
   score = None
   required = None
   m = SCORE_PAT.match(header)
@@ -146,6 +155,7 @@ class Msg(object):
   required = None
   headers = None
   raw = None # full original object from imap client
+  flags = None
   def __init__(self, id, spamHeader, dateHeader, headers):
     self.id = id
     self.score, self.required = scoreFromHeader(spamHeader)
@@ -210,14 +220,17 @@ def iterMessages(accountOrClient, callback, additionalFields=[]):
   else:
     imap = connectIMAP(accountOrClient)
     imap.select_folder(ARGS.mailbox)
-  messageIds = imap.sort(['REVERSE ARRIVAL'])#imap.search()
+
+  since = datetime.now() - timedelta(hours=24)
+  verbose('searching messages since %s' % str(since))
+  #messageIds = imap.search(['SINCE', since])
+  messageIds = imap.sort(['REVERSE DATE'], ['SINCE', since])#imap.search()
+  
   info('have %d messages in folder %s' % (len(messageIds), ARGS.mailbox))
   #print messageIds
   fields = ['BODY[HEADER]'] + additionalFields
-  # FIXME: honor --num messsages
+  #fields = ['ENVELOPE'] + additionalFields
   messages = imap.fetch(messageIds[:ARGS.num], fields)
-  noDate = 0
-  noScore = 0
   info('got %d messages' % len(messages))
   parser = EmailParser()
   msgs = []
@@ -228,18 +241,23 @@ def iterMessages(accountOrClient, callback, additionalFields=[]):
     dateHeader = headers.get('Date', None)
     receivedHeader = headers.get('Received', None)
     #verbose('%s SCORE %s' % (dateHeader, spamHeader))
-    if not dateHeader:
-      noDate = noDate + 1
-      continue
-    if not spamHeader:
-      noScore = noScore + 1
-      continue
+    #if not dateHeader:
+      #continue
+    #if not spamHeader:
+    #  noScore = noScore + 1
+    #  continue
     msg = Msg(msgId, spamHeader, dateHeader, headers)
     msg['headers'] = rawHeaders
     for f in additionalFields:
       msg[f.lower()] = data[f]
     msgs.append(msg)
 
+  msgDict = { m.id: m for m in msgs }
+   
+  flags = imap.get_flags(messageIds)
+  print 'flags', flags
+  for id in flags.keys():
+    msgDict[id].flags = flags[id]
   if doLogout:
     imap.logout()
   info('logged out')
@@ -279,13 +297,24 @@ def run_sa(msg):
 def cmd_list():
   def cback(msgs):
     pass
-  
-  msgs, _ = iterMessages(CONFIG.accounts[0], cback)
-  table = Texttable()
-  table.set_deco(Texttable.HEADER)
-  table.add_row(['Date', 'Score', 'From', 'Subject'])
-  table.add_rows([ [m.date, '%.1f' % m.score, m.headers.get('From', None), m.headers.get('Subject', None) ] for m in msgs ])
-  info(table.draw())
+
+  imap = connectIMAP(CONFIG.accounts[0])
+  # open readonly b/c otherwise messages will be marked as read '\\Seen'
+  imap.select_folder(ARGS.mailbox, readonly=True)
+  try:
+    msgs, _ = iterMessages(imap, cback)
+    msgs = sorted(msgs, key=lambda m: m.date)
+    ids = [ m.id for m in msgs ]
+    table = Texttable()
+    table.set_deco(Texttable.HEADER | Texttable.HLINES)
+    table.header(['Date', 'ID', 'Score', 'From', 'Subject', 'Flags'])
+    table.set_cols_width([20, 10, 6, 30, 30, 12])
+    table.set_precision(1)
+    for m in msgs:
+      table.add_row([m.date, m.id, '%.1f' % m.score if m.score else 'None', m.headers.get('From', None), m.headers.get('Subject', None), m.flags ])
+    info(table.draw())
+  finally:
+    imap.logout()
   
 def cmd_rescore():
   def cback(msgs):
@@ -372,30 +401,45 @@ def cmd_stats():
   
 def cmd_hack():
   info('hack running')
-  host, ip = hostAndIp('from sertcell.date (unknown [193.124.186.130])')
-  print host, ip
+#  host, ip = hostAndIp('from sertcell.date (unknown [193.124.186.130])')
+#  print host, ip
   scoreHeader = """No, score=0.0 required=5.0 tests=BAYES_50,HTML_IMAGE_ONLY_16,
   HTML_MESSAGE,HTML_SHORT_LINK_IMG_2,RP_MATCHES_RCVD,SPF_PASS,T_DKIM_INVALID,
   URIBL_BLOCKED,URIBL_DBL_SPAM autolearn=no autolearn_force=no version=3.4.1"""
   score, req = scoreFromHeader(scoreHeader)
   print 'score', score, 'required', req
 
+  now = datetime.now()
+  print now
+  ago = now - timedelta(hours=3)
+  print ago
+  sys.exit(1)
+  
   imap = connectIMAP(CONFIG.accounts[0])
   try:
     ARGS.mailbox = 'move-src'
     imap.select_folder(ARGS.mailbox)
-    print type(imap), isinstance(imap, IMAPClient)
-    print type(CONFIG.accounts[0]), isinstance(CONFIG.accounts[0], Account)
-    print imap.capabilities()
-    print '---------------'
+    #print imap.capabilities()
     msgs, _ = iterMessages(imap, lambda x: None)
-    for m in msgs:
-      print str(m)
-    print('----------------')
-    ids = [ m.id for m in msgs ]
-    flags = imap.get_flags(ids)
-    for id in flags.keys():
-      print id, str(flags[id])
+    print '---------------'
+    #m = msgs[0]
+    #print 'deleting %s/%s' % (m.id, m.headers.get('Subject', None))
+    #imap.delete_messages(m.id)
+    #raise Exception('deliberate break')
+    m = msgs[len(msgs)-1]
+    print 'moving %s/%s' % (str(m.id), m.headers.get('Subject', None))
+    print 'copy -> dest:', imap.copy(m.id, 'move-dest')
+    print 'delete', imap.delete_messages(m.id)
+    # imap.expunge()
+    imap._imap.uid('expunge', m.id)
+    
+    #for m in msgs:
+    #  print str(m)
+    #print('----------------')
+    #ids = [ m.id for m in msgs ]
+    #flags = imap.get_flags(ids)
+    #for id in flags.keys():
+    #  print id, str(flags[id])
   finally:
     imap.logout()
   
