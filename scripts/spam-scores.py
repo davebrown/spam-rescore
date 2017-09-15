@@ -18,54 +18,111 @@ from subprocess import STDOUT, check_output, CalledProcessError
 import yaml
 from tempfile import TemporaryFile
 from time import sleep
+import time
 from texttable import Texttable
 import logging
+import daemon
+from daemon import pidfile
 
-logging.basicConfig(
-  format='%(asctime)s - %(levelname)s: %(message)s',
-  level=logging.DEBUG
-)
+def catArgs(*args):
+  return ' '.join([str(e) for e in args])
 
-TTY = sys.stdout.isatty()
+class Output(object):
 
-def info(*args):
-  msg = ' '.join([str(e) for e in args])
-  sys.stdout.write(msg)
-  sys.stdout.write('\n')
-  sys.stdout.flush()
+  def info(self, *args):
+    pass
 
-def warn(*args):
-  msg = ' '.join([str(e) for e in args])
-  if TTY:
-    cprint(msg, 'yellow', file=sys.stderr, attrs=['bold'], end='\n')
-  else:
-    sys.stderr.write(msg)
-    sys.stderr.write('\n')
+  def warn(self, *args):
+    pass
 
-def err(*args):
-  msg = ' '.join([str(e) for e in args])
-  if TTY:
-    cprint(msg, 'red', attrs=['bold'], file=sys.stderr, end='\n')
-  else:
-    sys.stderr.write(msg)
-    sys.stderr.write('\n')
+  def err(self, *args):
+    pass
 
-def fail(*args):
-  msg = ' '.join([str(e) for e in args])
-  err('%s\nexiting...' % msg)
-  sys.exit(1)
-  
-def verbose(*args):
-  msg = ' '.join([str(e) for e in args])
-  #print('  (...verbose entry "%s"...)' % msg)
-  if not ARGS.verbose: return
-  if TTY:
-    cprint(msg, 'grey', attrs=['bold'], end='\n')
-  else:
+  def verbose(self, *args):
+    pass
+
+class TermOutput(Output):
+
+  TTY = sys.stdout.isatty()
+
+  def info(self, *args):
+    msg = ' '.join([str(e) for e in args])
     sys.stdout.write(msg)
     sys.stdout.write('\n')
     sys.stdout.flush()
 
+  def warn(self, *args):
+    msg = ' '.join([str(e) for e in args])
+    if self.TTY:
+      cprint(msg, 'yellow', file=sys.stderr, attrs=['bold'], end='\n')
+    else:
+      sys.stderr.write(msg)
+      sys.stderr.write('\n')
+
+  def err(self, *args):
+    msg = ' '.join([str(e) for e in args])
+    if self.TTY:
+      cprint(msg, 'red', attrs=['bold'], file=sys.stderr, end='\n')
+    else:
+      sys.stderr.write(msg)
+      sys.stderr.write('\n')
+
+  def verbose(self, *args):
+    msg = ' '.join([str(e) for e in args])
+    if not ARGS.verbose: return
+    if self.TTY:
+      cprint(msg, 'grey', attrs=['bold'], end='\n')
+    else:
+      sys.stdout.write(msg)
+      sys.stdout.write('\n')
+      sys.stdout.flush()
+  
+
+class LogOutput(Output):
+
+  def __init__(self, logFile='/tmp/spam-scores.log'):
+    logging.basicConfig(
+      format='%(asctime)s - %(name)s - %(levelname)s: %(message)s',
+      filename=logFile,
+      level=logging.DEBUG
+    )
+    self.logFile = logFile
+    self.logger = logging.getLogger('spam-scores')
+  
+  def info(self, *args):
+    self.logger.info(catArgs(*args))
+
+  def warn(self, *args):
+    self.logger.warning(catArgs(*args))
+
+  def err(self, *args):
+    self.logger.error(catArgs(*args))
+
+  def verbose(self, *args):
+    self.logger.debug(catArgs(*args))
+
+  def __str__(self):
+    return '{LogOutput file=%s}' % self.logFile
+
+def info(*args):
+  #msg = ' '.join([str(e) for e in args])
+  #print 'FUNC INFO ARGS', args, len(args), '"', msg, '"'
+  OUTPUT.info(*args)
+
+def warn(*args):
+  OUTPUT.warn(*args)
+
+def err(*args):
+  OUTPUT.err(*args)
+
+def verbose(*args):
+  OUTPUT.verbose(*args)
+
+def fail(*args):
+  msg = ' '.join([str(e) for e in args])
+  OUTPUT.err('%s\nexiting...' % msg)
+  sys.exit(1)
+  
 def _(data, name, required=True):
   ret = data.get(name, None)
   if not ret and required:
@@ -73,11 +130,6 @@ def _(data, name, required=True):
   return ret
 
 class Account(object):
-  email = None
-  username = None
-  password = None
-  host = None
-  disableCert = False
 
   def __init__(self, data):
     self.email = _(data, 'email')
@@ -94,7 +146,6 @@ class Account(object):
     return '{Account %s username=%s host=%s}' % (self.email, self.username, self.host)
   
 class Config(object):
-  accounts = None
 
   def __init__(self, data):
     accts = data.get('accounts', None)
@@ -151,13 +202,7 @@ def dateFromReceivedHeader(header):
   return None
   
 class Msg(object):
-  id = None
-  date = None
-  score = None
-  required = None
-  headers = None
-  raw = None # full original object from imap client
-  flags = None
+
   def __init__(self, id, spamHeader, dateHeader, headers):
     self.id = id
     self.score, self.required = scoreFromHeader(spamHeader)
@@ -167,6 +212,7 @@ class Msg(object):
       self.date = datetime.fromtimestamp(rfc822.mktime_tz(rfc822.parsedate_tz(dateHeader)))
     self.headers = headers
     self.data = {}
+    self.flags = None
 
   def __str__(self):
     return '{Msg: id=%d score=%s date=%s}' % (self.id, '%.1f' % self.score if self.score is not None else 'None', str(self.date))
@@ -327,7 +373,7 @@ def cmd_list():
   
 def cmd_rescore():
   msgs = iterMessages(CONFIG.accounts[0], ['BODY[TEXT]'])
-  print '================'
+  info('======= RESCORE =========')
   newSpam = 0
   unSpam = 0
   scoreUp = 0
@@ -382,6 +428,7 @@ def cmd_received():
   
   
 def cmd_stats():
+  info('cmd_stats entry')
   msgs = iterMessages(CONFIG.accounts[0])
   months = {}
   for m in msgs:
@@ -402,10 +449,69 @@ def cmd_stats():
     #info('%s : %d msgs, min=%.1f max=%.1f median=%.1f mean=%.1f' % (month, count, minval, maxval, med, avg))
     table.add_row([month, count, minval, maxval, med, avg])
 
-  info(table.draw())
-  
+  info('stats\n%s' % table.draw())
+
+def daemonLoop():
+  global OUTPUT
+  OUTPUT = LogOutput(ARGS.logfile)
+  while True:
+    try:
+      info('daemon loop running at %s' % str(datetime.now()))
+      cmd_stats()
+      time.sleep(10)
+    except Exception as e:
+      err('Exception in daemon loop', e)
+      logging.error(e, exc_info=True)
+      sys.exit(1)
+
+def do_something(logf):
+    ### This does the "work" of the daemon
+    global OUTPUT
+    OUTPUT = LogOutput(ARGS.logfile)
+    
+    logger = logging.getLogger('eg_daemon')
+    #logger.setLevel(logging.INFO)
+
+    #fh = logging.FileHandler(logf)
+    #fh.setLevel(logging.INFO)
+
+    #formatstr = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    #formatter = logging.Formatter(formatstr)
+
+    #fh.setFormatter(formatter)
+
+    #logger.addHandler(fh)
+
+    while True:
+      try:
+        logger.debug("this is an DEBUG message")
+        logger.info("this is an INFO message - global output object is %s / %s" % (str(OUTPUT), OUTPUT.logFile))
+        logger.error("this is an ERROR message")
+        info('INFO func called here')
+        OUTPUT.info('OUTPUT.info called here')
+        time.sleep(5)
+      except Exception as e:
+        err('Exception in daemon loop', e)
+        logging.error(e, exc_info=True)
+        sys.exit(1)
+        
+    
+# https://stackoverflow.com/questions/13106221/how-do-i-set-up-a-daemon-with-python-daemon/40536099#40536099  
+def cmd_daemon():
+  pidf = '/tmp/spam-scores.pid'
+  print('starting daemon with pidfile=%s and log file=%s' % (pidf, ARGS.logfile))
+  with daemon.DaemonContext(pidfile=pidfile.TimeoutPIDLockFile(pidf)) as context:
+    #do_something(ARGS.logfile)
+    daemonLoop()
+      
 def cmd_hack():
-  info('hack running')
+  info('Info level', 'a', 'b', 'c')
+  warn('Warn level', 'a', 'b', 'c')
+  err('Error level', 'a', 'b', 'c', {'d': 'e', 'f': 13})
+  verbose('Verbose level', 'a', 'b', 'c')
+  sys.exit(1)
+  
+  #info('hack running')
 #  host, ip = hostAndIp('from sertcell.date (unknown [193.124.186.130])')
 #  print host, ip
   scoreHeader = """No, score=0.0 required=5.0 tests=BAYES_50,HTML_IMAGE_ONLY_16,
@@ -424,7 +530,6 @@ def cmd_hack():
   print now
   ago = now - timedelta(hours=3)
   print ago
-  sys.exit(1)
   
   imap = connectIMAP(CONFIG.accounts[0])
   try:
@@ -460,12 +565,15 @@ COMMANDS = [
   cmd_received,
   cmd_stats,
   cmd_hack,
-  cmd_list
+  cmd_list,
+  cmd_daemon
 ]
 
 def main():
   global ARGS
   global CONFIG
+  global OUTPUT
+  OUTPUT = TermOutput()
   validCommands = ''
   #for c in COMMANDS:
   for c in COMMANDS:
@@ -483,13 +591,13 @@ def main():
   parser.add_argument('-c', '--config', help='specify config file', default='%s/.spam-config.yaml' % os.environ['HOME'])
   parser.add_argument('-n', '--num', help='number of messages to examine', default=400, type=int)
   parser.add_argument('-m', '--mailbox', help='specify mailbox', default='INBOX')
-  #parser.add_argument('-u', '--url', help='url of remote server', default='http://localhost:9080')
+  parser.add_argument('-l', '--logfile', help='specify log file (in daemon mode)', default=os.environ['HOME'] + '/logs/spam-scores.log')
+  #parser.add_argument('-d', '--daemon', help='detach from terminal and run as daemon', default=False, action='store_true')
   parser.add_argument('command', help=validCommands)
   parser.add_argument('args', nargs='*', help='command-specific arguments')
   ARGS = parser.parse_args()
   CONFIG = loadConfig(ARGS.config)
-  info('verbose is: ', ARGS.verbose)
-  verbose("got args %s" % str(ARGS))
+  #verbose("got args %s" % str(ARGS))
   cmd = ARGS.command.replace('-', '_')
   func = None
   for f in COMMANDS:
