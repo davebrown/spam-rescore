@@ -135,6 +135,7 @@ class Account(object):
     self.email = _(data, 'email')
     self.password = _(data, 'password')
     self.host = _(data, 'host', False)
+    self.probablySpam = 'probably-spam' # FIXME
     account = self.email.split('@')
     if len(account) != 2:
       raise Exception('invalid email address "%s"' % self.email)
@@ -248,6 +249,16 @@ def stats(msgs):
       maxval = max(maxval, m.score)
   return len(msgs), minval, maxval, median(nums), mean(nums)
 
+def moveMessages(imap, messages, toMailbox):
+    imap.select_folder(ARGS.mailbox, readonly=False)
+    ret = imap.copy(messages, toMailbox)
+    info('copy returned', ret)
+    ret = imap.delete_messages(messages)
+    info('delete returned', ret)
+    #ret = imap.expunge(messages) # FIXME: pull in IMAPClient patch
+    ret = imap.expunge()
+    info('expunge returned', ret)
+
 def connectIMAP(account):
   username = account.username
   host = account.host
@@ -272,10 +283,10 @@ def iterMessages(accountOrClient, additionalFields=[]):
     imap.select_folder(ARGS.mailbox)
 
   since = datetime.now() - timedelta(hours=24)
-  verbose('searching messages since %s' % str(since))
+  info('searching messages since %s' % str(since))
   #messageIds = imap.search(['SINCE', since])
-  messageIds = imap.sort(['REVERSE DATE'])
-  #messageIds = imap.sort(['REVERSE DATE'], ['SINCE', since])#imap.search()
+  #messageIds = imap.sort(['REVERSE DATE'])
+  messageIds = imap.sort(['REVERSE DATE'], ['SINCE', since])#imap.search()
   
   info('have %d messages in folder %s' % (len(messageIds), ARGS.mailbox))
   #print messageIds
@@ -372,13 +383,17 @@ def cmd_list():
     imap.logout()
   
 def cmd_rescore():
-  msgs = iterMessages(CONFIG.accounts[0], ['BODY[TEXT]'])
+  account = CONFIG.accounts[0]
+  imap = connectIMAP(account)
+  imap.select_folder(ARGS.mailbox, readonly=True)
+  msgs = iterMessages(imap, ['BODY[TEXT]'])
   info('======= RESCORE =========')
   newSpam = 0
   unSpam = 0
   scoreUp = 0
   scoreDown = 0
   scoreSame = 0
+  spamIds = []
   for m in msgs:
     #headers = m['headers']
     #print headers
@@ -390,6 +405,7 @@ def cmd_rescore():
       scoreUp += 1
       if newScore > 5.0:
         newSpam += 1
+        spamIds.append(m.id)
     elif newScore < m.score:
       scoreDown += 1
       if m.score > 5.0 and newScore < 5.0:
@@ -397,7 +413,14 @@ def cmd_rescore():
     else:
       scoreSame += 1
     subject = m.headers.get('Subject', None)
-    info('score went from %.1f to %.1f for %s/"%s"' % (m.score, newScore, m.id, subject))
+    verbose('score went from %.1f to %.1f for %s/"%s"' % (m.score, newScore, m.id, subject))
+
+  if len(spamIds) > 0:
+    info('moving %d message(s) to %s' % (len(spamIds), account.probablySpam))
+    moveMessages(imap, spamIds, account.probablySpam)
+  else:
+    info('NO NEW SPAM found on this run (checked %d message(s))' % len(msgs))
+  imap.logout() # FIXME: in finally block
   info('OUT of %d message(s):' % ARGS.num)
   info(' %d new spam' % newSpam)
   info(' %d dropped below spam threshold' % unSpam)
@@ -405,6 +428,30 @@ def cmd_rescore():
   info(' %d score decreased' % scoreDown)
   info(' %d score unchanged' % scoreSame)
   
+  
+def cmd_move():
+  if len(ARGS.args) != 2:
+    err('usage: move <msg-id> <mailbox>')
+    sys.exit(1)
+  msgId = ARGS.args[0]
+  toMailbox = ARGS.args[1]
+  imap = connectIMAP(CONFIG.accounts[0])
+  # open readonly b/c otherwise messages will be marked as read '\\Seen'
+  imap.select_folder(ARGS.mailbox, readonly=True)
+  try:
+    msgs = iterMessages(imap)
+    msg = None
+    for m in msgs:
+      if msgId == m.headers.get('Message-Id', None):
+        msg = m
+        break
+    if msg is None:
+      fail('cannot find message id="%s" in mailbox %s' % (msgId, ARGS.mailbox))
+    info('moving message %s to %s' % (str(msg), toMailbox))
+    moveMessages(imap, msg.id, toMailbox)
+  finally:
+    imap.logout()
+    
 def cmd_received():
   hosts = Counter()
   ips = Counter()
@@ -457,8 +504,8 @@ def daemonLoop():
   while True:
     try:
       info('daemon loop running at %s' % str(datetime.now()))
-      cmd_stats()
-      time.sleep(10)
+      cmd_rescore()
+      time.sleep(10 * 60)
     except Exception as e:
       err('Exception in daemon loop', e)
       logging.error(e, exc_info=True)
@@ -566,7 +613,8 @@ COMMANDS = [
   cmd_stats,
   cmd_hack,
   cmd_list,
-  cmd_daemon
+  cmd_daemon,
+  cmd_move
 ]
 
 def main():
