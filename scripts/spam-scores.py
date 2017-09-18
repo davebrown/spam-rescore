@@ -81,10 +81,14 @@ class TermOutput(Output):
 class LogOutput(Output):
 
   def __init__(self, logFile='/tmp/spam-scores.log'):
+    global ARGS
+    logLevel = logging.INFO
+    if ARGS.verbose:
+      logLevel = logging.DEBUG
     logging.basicConfig(
       format='%(asctime)s - %(name)s - %(levelname)s: %(message)s',
       filename=logFile,
-      level=logging.DEBUG
+      level=logLevel
     )
     self.logFile = logFile
     self.logger = logging.getLogger('spam-scores')
@@ -105,8 +109,6 @@ class LogOutput(Output):
     return '{LogOutput file=%s}' % self.logFile
 
 def info(*args):
-  #msg = ' '.join([str(e) for e in args])
-  #print 'FUNC INFO ARGS', args, len(args), '"', msg, '"'
   OUTPUT.info(*args)
 
 def warn(*args):
@@ -135,7 +137,7 @@ class Account(object):
     self.email = _(data, 'email')
     self.password = _(data, 'password')
     self.host = _(data, 'host', False)
-    self.probablySpam = 'probably-spam' # FIXME
+    self.probablySpam = data.get('probablySpam', 'probably-spam')
     account = self.email.split('@')
     if len(account) != 2:
       raise Exception('invalid email address "%s"' % self.email)
@@ -220,8 +222,14 @@ class Msg(object):
 
   def month(self):
     return '%d-%d' % (self.date.year, self.date.month)
-
-  def header(self,name):
+  
+  # return float-formatted string or "None"
+  def scoreStr(self):
+    if self.score is not None:
+      return '%.1f' % self.score
+    return 'None'
+  
+  def header(self, name):
     return self.headers.get(name, None)
 
   def __setitem__(self, key, item):
@@ -250,14 +258,15 @@ def stats(msgs):
   return len(msgs), minval, maxval, median(nums), mean(nums)
 
 def moveMessages(imap, messages, toMailbox):
-    imap.select_folder(ARGS.mailbox, readonly=False)
-    ret = imap.copy(messages, toMailbox)
-    info('copy returned', ret)
-    ret = imap.delete_messages(messages)
-    info('delete returned', ret)
-    #ret = imap.expunge(messages) # FIXME: pull in IMAPClient patch
-    ret = imap.expunge()
-    info('expunge returned', ret)
+  # FIXME: ensure toMailbox exists
+  imap.select_folder(ARGS.mailbox, readonly=False)
+  ret = imap.copy(messages, toMailbox)
+  info('copy returned', ret)
+  ret = imap.delete_messages(messages)
+  info('delete returned', ret)
+  #ret = imap.expunge(messages) # FIXME: pull in IMAPClient patch
+  ret = imap.expunge()
+  info('expunge returned', ret)
 
 def connectIMAP(account):
   username = account.username
@@ -266,6 +275,7 @@ def connectIMAP(account):
 
   # FIXME: cert chain not trusted for some reason
   context = imapclient.create_default_context()
+  # FIXME: verify_mode from config
   context.verify_mode = ssl.CERT_NONE
   
   imap = IMAPClient(host, use_uid=True, ssl=True, ssl_context=context) # no one should ever use cleartext these days
@@ -377,57 +387,63 @@ def cmd_list():
     table.set_cols_width([20, 10, 6, 30, 30, 12])
     table.set_precision(1)
     for m in msgs:
-      table.add_row([m.date, m.id, '%.1f' % m.score if m.score is not None else 'None', m.headers.get('From', None), m.headers.get('Subject', None), m.flags ])
+      table.add_row([m.date, m.id, m.scoreStr(), m.headers.get('From', None), m.headers.get('Subject', None), m.flags ])
     info(table.draw())
   finally:
     imap.logout()
   
 def cmd_rescore():
-  account = CONFIG.accounts[0]
-  imap = connectIMAP(account)
-  imap.select_folder(ARGS.mailbox, readonly=True)
-  msgs = iterMessages(imap, ['BODY[TEXT]'])
-  info('======= RESCORE =========')
-  newSpam = 0
-  unSpam = 0
-  scoreUp = 0
-  scoreDown = 0
-  scoreSame = 0
-  spamIds = []
-  for m in msgs:
-    #headers = m['headers']
-    #print headers
-    #print '---------------'
-    #print m['body[text]']
-    #print '==============='
-    newScore = run_sa(m)
-    if newScore > m.score:
-      scoreUp += 1
-      if newScore > 5.0:
-        newSpam += 1
-        spamIds.append(m.id)
-    elif newScore < m.score:
-      scoreDown += 1
-      if m.score > 5.0 and newScore < 5.0:
-        unSpam += 1
-    else:
-      scoreSame += 1
-    subject = m.headers.get('Subject', None)
-    verbose('score went from %.1f to %.1f for %s/"%s"' % (m.score, newScore, m.id, subject))
+  for account in CONFIG.accounts:
+    rescoreAccount(account)
 
-  if len(spamIds) > 0:
-    info('moving %d message(s) to %s' % (len(spamIds), account.probablySpam))
-    moveMessages(imap, spamIds, account.probablySpam)
-  else:
-    info('NO NEW SPAM found on this run (checked %d message(s))' % len(msgs))
-  imap.logout() # FIXME: in finally block
-  info('OUT of %d message(s):' % ARGS.num)
+def rescoreAccount(account):  
+  imap = connectIMAP(account)
+  # FIXME: should it have per-account mailbox(es) to scan?
+  imap.select_folder(ARGS.mailbox, readonly=True)
+  try:
+    msgs = iterMessages(imap, ['BODY[TEXT]'])
+    info('======= RESCORE %s =========' % account.email)
+    newSpam = 0
+    unSpam = 0
+    scoreUp = 0
+    scoreDown = 0
+    scoreSame = 0
+    spamIds = []
+    for m in msgs:
+      newScore = run_sa(m)
+      subject = m.headers.get('Subject', None)
+      if newScore > m.score:
+        scoreUp += 1
+        if newScore > 5.0:
+          newSpam += 1
+          spamIds.append(m.id)
+          info('new spam found, score %.1f for %s/"%s"' % (newScore, m.id, subject))
+      elif newScore < m.score:
+        scoreDown += 1
+        if m.score > 5.0 and newScore < 5.0:
+          unSpam += 1
+      else:
+        scoreSame += 1
+
+      if newScore != m.score:
+        verbose('score went from %s to %.1f for %s/"%s"' % (m.scoreStr(), newScore, m.id, subject))
+      else:
+        verbose('unchanged at %s for %s/"%s"' % (m.scoreStr(), m.id, subject))
+
+    if len(spamIds) > 0:
+      info('moving %d message(s) to %s' % (len(spamIds), account.probablySpam))
+      moveMessages(imap, spamIds, account.probablySpam)
+    else:
+      info('NO NEW SPAM found on this run (checked %d message(s))' % len(msgs))
+  finally:
+    imap.logout()
+
+  info('OUT of %d message(s):' % len(msgs))
   info(' %d new spam' % newSpam)
   info(' %d dropped below spam threshold' % unSpam)
   info(' %d score increased' % scoreUp)
   info(' %d score decreased' % scoreDown)
   info(' %d score unchanged' % scoreSame)
-  
   
 def cmd_move():
   if len(ARGS.args) != 2:
@@ -511,44 +527,12 @@ def daemonLoop():
       logging.error(e, exc_info=True)
       sys.exit(1)
 
-def do_something(logf):
-    ### This does the "work" of the daemon
-    global OUTPUT
-    OUTPUT = LogOutput(ARGS.logfile)
-    
-    logger = logging.getLogger('eg_daemon')
-    #logger.setLevel(logging.INFO)
-
-    #fh = logging.FileHandler(logf)
-    #fh.setLevel(logging.INFO)
-
-    #formatstr = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    #formatter = logging.Formatter(formatstr)
-
-    #fh.setFormatter(formatter)
-
-    #logger.addHandler(fh)
-
-    while True:
-      try:
-        logger.debug("this is an DEBUG message")
-        logger.info("this is an INFO message - global output object is %s / %s" % (str(OUTPUT), OUTPUT.logFile))
-        logger.error("this is an ERROR message")
-        info('INFO func called here')
-        OUTPUT.info('OUTPUT.info called here')
-        time.sleep(5)
-      except Exception as e:
-        err('Exception in daemon loop', e)
-        logging.error(e, exc_info=True)
-        sys.exit(1)
-        
-    
 # https://stackoverflow.com/questions/13106221/how-do-i-set-up-a-daemon-with-python-daemon/40536099#40536099  
 def cmd_daemon():
   pidf = '/tmp/spam-scores.pid'
   print('starting daemon with pidfile=%s and log file=%s' % (pidf, ARGS.logfile))
+  info('daemon starting....')
   with daemon.DaemonContext(pidfile=pidfile.TimeoutPIDLockFile(pidf)) as context:
-    #do_something(ARGS.logfile)
     daemonLoop()
       
 def cmd_hack():
