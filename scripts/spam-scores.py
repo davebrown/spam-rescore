@@ -397,12 +397,12 @@ def cmd_rescore():
     rescoreAccount(account)
 
 def rescoreAccount(account):  
+  info('======= RESCORE %s =========' % account.email)
   imap = connectIMAP(account)
   # FIXME: should it have per-account mailbox(es) to scan?
   imap.select_folder(ARGS.mailbox, readonly=True)
   try:
     msgs = iterMessages(imap, ['BODY[TEXT]'])
-    info('======= RESCORE %s =========' % account.email)
     newSpam = 0
     unSpam = 0
     scoreUp = 0
