@@ -1,0 +1,7 @@
+backports.ssl
+IMAPClient
+pyOpenSSL
+termcolor
+pyYAML
+texttable
+python-daemon
