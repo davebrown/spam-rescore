@@ -371,7 +371,7 @@ def hostAndIp(rcvd):
     ip = m.group(2)
   return host, ip
 
-SA_SCORE_PAT = re.compile('^([+-]?\d+\.\d+)/.*')
+SA_SCORE_PAT = re.compile('^([+-]?\d+\.?\d*)/.*')
 def run_sa(msg):
   with TemporaryFile(mode='r+b', suffix='.eml', prefix='spamcheck') as tf:
     tf.write(msg['headers'])
