@@ -27,6 +27,15 @@ from daemon import pidfile
 def catArgs(*args):
   return ' '.join([str(e) for e in args])
 
+def mkdirs(path):
+  try:
+    os.makedirs(path)
+  except OSError as exc:  # Python >2.5
+    if exc.errno == errno.EEXIST and os.path.isdir(path):
+      pass
+    else:
+      raise
+
 class Output(object):
 
   def info(self, *args):
@@ -85,6 +94,7 @@ class LogOutput(Output):
     logLevel = logging.INFO
     if ARGS.verbose:
       logLevel = logging.DEBUG
+    mkdirs(os.path.dirname(logFile))
     logging.basicConfig(
       format='%(asctime)s - %(name)s - %(levelname)s: %(message)s',
       filename=logFile,
@@ -121,6 +131,7 @@ def verbose(*args):
   OUTPUT.verbose(*args)
 
 def fail(*args):
+  global OUTPUT
   msg = ' '.join([str(e) for e in args])
   OUTPUT.err('%s\nexiting...' % msg)
   sys.exit(1)
@@ -137,7 +148,8 @@ class Account(object):
     self.email = _(data, 'email')
     self.password = _(data, 'password')
     self.host = _(data, 'host', False)
-    self.probablySpam = data.get('probablySpam', 'probably-spam')
+    self.spamFolder = data.get('spam-folder', 'probably-spam')
+    self.verifySSL = data.get('verify-ssl', True)
     account = self.email.split('@')
     if len(account) != 2:
       raise Exception('invalid email address "%s"' % self.email)
@@ -146,7 +158,8 @@ class Account(object):
       self.host = account[1]
 
   def __str__(self):
-    return '{Account %s username=%s host=%s}' % (self.email, self.username, self.host)
+    return '{Account %s username=%s host=%s spamFolder=%s check-ssl=%s}' % (
+      self.email, self.username, self.host, self.spamFolder, self.verifySSL)
   
 class Config(object):
 
@@ -203,6 +216,23 @@ def dateFromReceivedHeader(header):
       #return datetime.fromtimestamp(rfc822.mktime_tz(rfc822.parsedate_tz(vals[1])))
       return vals[1]
   return None
+
+TIME_PAT = re.compile('([-]?\d+)([dwmDWM])')
+def parseSince(s):
+  print 'parse since "%s"' % s
+  m = TIME_PAT.match(s)
+  if m:
+    num = -abs(int(m.group(1))) # assume we want a date in the past
+    units = m.group(2).lower()
+    if units == 'd':
+      delta = timedelta(days=num)
+    elif units == 'w':
+      delta = timedelta(weeks=num)
+    else:
+      delta = timedelta(weeks=4 * num)
+    return datetime.now() + delta
+  else:
+    fail('invalid \'since\' "%s". Must match <number<"d"|"w"|"m"> - e.g., "10d", "2w", "1m"' % s)
   
 class Msg(object):
 
@@ -273,10 +303,10 @@ def connectIMAP(account):
   host = account.host
   password = account.password
 
-  # FIXME: cert chain not trusted for some reason
   context = imapclient.create_default_context()
-  # FIXME: verify_mode from config
-  context.verify_mode = ssl.CERT_NONE
+  if not account.verifySSL:
+    context.verify_mode = ssl.CERT_NONE
+    warn('SSL cert verification disabled for host %s' % host)
   
   imap = IMAPClient(host, use_uid=True, ssl=True, ssl_context=context) # no one should ever use cleartext these days
   imap.login(username, password)
@@ -292,16 +322,11 @@ def iterMessages(accountOrClient, additionalFields=[]):
     imap = connectIMAP(accountOrClient)
     imap.select_folder(ARGS.mailbox)
 
-  since = datetime.now() - timedelta(hours=24)
-  info('searching messages since %s' % str(since))
-  #messageIds = imap.search(['SINCE', since])
-  #messageIds = imap.sort(['REVERSE DATE'])
-  messageIds = imap.sort(['REVERSE DATE'], ['SINCE', since])#imap.search()
+  info('searching messages since %s' % str(ARGS.since))
+  messageIds = imap.sort(['REVERSE DATE'], ['SINCE', ARGS.since])
   
   info('have %d messages in folder %s' % (len(messageIds), ARGS.mailbox))
-  #print messageIds
   fields = ['BODY[HEADER]'] + additionalFields
-  #fields = ['ENVELOPE'] + additionalFields
   messages = imap.fetch(messageIds[:ARGS.num], fields)
   info('got %d messages' % len(messages))
   parser = EmailParser()
@@ -318,13 +343,6 @@ def iterMessages(accountOrClient, additionalFields=[]):
       # so I believe this won't happen
       warn('message %s/"%s" has no discernible date, ingoring' % (msgId, headers.get('Subject', None)))
       continue
-    #verbose('%s SCORE %s' % (dateHeader, spamHeader))
-    #if not dateHeader:
-      #continue
-    #if not spamHeader:
-    #  noScore = noScore + 1
-    #  continue
-    #verbose('msgId=%s spam=%s date=%s headers=%s' % (msgId, spamHeader, dateHeader, str(headers)))
     msg = Msg(msgId, spamHeader, dateHeader, headers)
     msg['headers'] = rawHeaders
     for f in additionalFields:
@@ -359,8 +377,8 @@ def run_sa(msg):
     tf.write(msg['headers'])
     tf.write(msg['body[text]'])
     tf.seek(0)
-    #output = check_output(['sed', '-E', 's/score=([0-9]+\.[0-9]+)/score=3.14159/g'], stdin=tf, stderr=STDOUT)
     try:
+      #output = check_output(['sed', '-E', 's/score=([0-9]+\.[0-9]+)/score=3.14159/g'], stdin=tf, stderr=STDOUT)
       output = check_output(['spamc', '-c'], stdin=tf, stderr=STDOUT)
     except CalledProcessError as cpe:
       output = cpe.output.replace('\n', '')
@@ -387,6 +405,8 @@ def cmd_list():
     table.set_cols_width([20, 10, 6, 30, 30, 12])
     table.set_precision(1)
     for m in msgs:
+      if m.score is not None and m.score < ARGS.score:
+        continue
       table.add_row([m.date, m.id, m.scoreStr(), m.headers.get('From', None), m.headers.get('Subject', None), m.flags ])
     info(table.draw())
   finally:
@@ -408,10 +428,14 @@ def rescoreAccount(account):
     scoreUp = 0
     scoreDown = 0
     scoreSame = 0
+    skipped = 0
     spamIds = []
     for m in msgs:
+      if m.score is not None and m.score < ARGS.score:
+        skipped += 1
+        continue
       newScore = run_sa(m)
-      subject = m.headers.get('Subject', None)
+      subject = m.header('Subject')
       if newScore > m.score:
         scoreUp += 1
         if newScore > 5.0:
@@ -431,14 +455,15 @@ def rescoreAccount(account):
         verbose('unchanged at %s for %s/"%s"' % (m.scoreStr(), m.id, subject))
 
     if len(spamIds) > 0:
-      info('moving %d message(s) to %s' % (len(spamIds), account.probablySpam))
-      moveMessages(imap, spamIds, account.probablySpam)
+      info('moving %d message(s) to %s' % (len(spamIds), account.spamFolder))
+      moveMessages(imap, spamIds, account.spamFolder)
     else:
       info('NO NEW SPAM found on this run (checked %d message(s))' % len(msgs))
   finally:
     imap.logout()
 
   info('OUT of %d message(s):' % len(msgs))
+  info(' %d skipped (score below threshold of %d)' % (skipped, ARGS.score))
   info(' %d new spam' % newSpam)
   info(' %d dropped below spam threshold' % unSpam)
   info(' %d score increased' % scoreUp)
@@ -458,7 +483,7 @@ def cmd_move():
     msgs = iterMessages(imap)
     msg = None
     for m in msgs:
-      if msgId == m.headers.get('Message-Id', None):
+      if msgId == m.header('Message-Id'):
         msg = m
         break
     if msg is None:
@@ -498,7 +523,6 @@ def cmd_stats():
     month = months.get(m.month(), [])
     month.append(m)
     months[m.month()] = month
-    #verbose('%s -- %s' % (m.month(), str(m)))
 
   table = Texttable()
   table.set_deco(Texttable.HEADER)
@@ -509,7 +533,6 @@ def cmd_stats():
   for month in sorted(months.keys()):
     msgs = months[month]
     count, minval, maxval, med, avg = stats(msgs)
-    #info('%s : %d msgs, min=%.1f max=%.1f median=%.1f mean=%.1f' % (month, count, minval, maxval, med, avg))
     table.add_row([month, count, minval, maxval, med, avg])
 
   info('stats\n%s' % table.draw())
@@ -525,7 +548,7 @@ def daemonLoop():
     except Exception as e:
       err('Exception in daemon loop', e)
       logging.error(e, exc_info=True)
-      sys.exit(1)
+      fail('Exception in daemon loop')
 
 # https://stackoverflow.com/questions/13106221/how-do-i-set-up-a-daemon-with-python-daemon/40536099#40536099  
 def cmd_daemon():
@@ -536,6 +559,13 @@ def cmd_daemon():
     daemonLoop()
       
 def cmd_hack():
+  print ARGS.since
+  print parseSince('-10d')
+  print parseSince('2w')
+  print parseSince('3M')
+  global CONFIG
+  print 'config', CONFIG
+  print 'account[0]', CONFIG.accounts[0]
   info('Info level', 'a', 'b', 'c')
   warn('Warn level', 'a', 'b', 'c')
   err('Error level', 'a', 'b', 'c', {'d': 'e', 'f': 13})
@@ -574,7 +604,7 @@ def cmd_hack():
     #imap.delete_messages(m.id)
     #raise Exception('deliberate break')
     m = msgs[len(msgs)-1]
-    print 'moving %s/%s' % (str(m.id), m.headers.get('Subject', None))
+    print 'moving %s/%s' % (str(m.id), m.header('Subject'))
     print 'copy -> dest:', imap.copy(m.id, 'move-dest')
     print 'delete', imap.delete_messages(m.id)
     # imap.expunge()
@@ -621,7 +651,11 @@ def main():
   HOME = os.environ['HOME']
   parser.add_argument('-v', '--verbose', help='emit verbose output', default=False, action="store_true")
   parser.add_argument('-c', '--config', help='specify config file', default='%s/.spam-config.yaml' % os.environ['HOME'])
-  parser.add_argument('-n', '--num', help='number of messages to examine', default=400, type=int)
+  parser.add_argument('-s', '--since', help='examine messages since date (eg, "10d", "2w", "1m"', \
+                      default=datetime.now() - timedelta(days=1), type=parseSince)
+  parser.add_argument('--score', help='score filter, skip messages with score <=filter (used in list,rescore,daemon). Default=0.0', \
+                      default=0.0, type=float)
+  parser.add_argument('-n', '--num', help='maximum number of messages to examine', default=400, type=int)
   parser.add_argument('-m', '--mailbox', help='specify mailbox', default='INBOX')
   parser.add_argument('-l', '--logfile', help='specify log file (in daemon mode)', default=os.environ['HOME'] + '/logs/spam-scores.log')
   #parser.add_argument('-d', '--daemon', help='detach from terminal and run as daemon', default=False, action='store_true')
