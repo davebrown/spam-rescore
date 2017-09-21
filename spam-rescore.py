@@ -23,6 +23,7 @@ from texttable import Texttable
 import logging
 import daemon
 from daemon import pidfile
+import errno
 
 def catArgs(*args):
   return ' '.join([str(e) for e in args])
@@ -89,7 +90,7 @@ class TermOutput(Output):
 
 class LogOutput(Output):
 
-  def __init__(self, logFile='/tmp/spam-scores.log'):
+  def __init__(self, logFile='/tmp/spam-rescore.log'):
     global ARGS
     logLevel = logging.INFO
     if ARGS.verbose:
@@ -101,7 +102,7 @@ class LogOutput(Output):
       level=logLevel
     )
     self.logFile = logFile
-    self.logger = logging.getLogger('spam-scores')
+    self.logger = logging.getLogger('spam-rescore')
   
   def info(self, *args):
     self.logger.info(catArgs(*args))
@@ -540,9 +541,10 @@ def cmd_stats():
 def daemonLoop():
   global OUTPUT
   OUTPUT = LogOutput(ARGS.logfile)
+  OUTPUT.info('============== daemon starting ===============')
   while True:
     try:
-      info('daemon loop running at %s' % str(datetime.now()))
+      info('==== daemon loop running at %s ====' % str(datetime.now()))
       cmd_rescore()
       time.sleep(10 * 60)
     except Exception as e:
@@ -552,9 +554,8 @@ def daemonLoop():
 
 # https://stackoverflow.com/questions/13106221/how-do-i-set-up-a-daemon-with-python-daemon/40536099#40536099  
 def cmd_daemon():
-  pidf = '/tmp/spam-scores.pid'
+  pidf = '/tmp/spam-rescore.pid'
   print('starting daemon with pidfile=%s and log file=%s' % (pidf, ARGS.logfile))
-  info('daemon starting....')
   with daemon.DaemonContext(pidfile=pidfile.TimeoutPIDLockFile(pidf)) as context:
     daemonLoop()
       
@@ -657,7 +658,7 @@ def main():
                       default=0.0, type=float)
   parser.add_argument('-n', '--num', help='maximum number of messages to examine', default=400, type=int)
   parser.add_argument('-m', '--mailbox', help='specify mailbox', default='INBOX')
-  parser.add_argument('-l', '--logfile', help='specify log file (in daemon mode)', default=os.environ['HOME'] + '/logs/spam-scores.log')
+  parser.add_argument('-l', '--logfile', help='specify log file (in daemon mode)', default=os.environ['HOME'] + '/logs/spam-rescore.log')
   #parser.add_argument('-d', '--daemon', help='detach from terminal and run as daemon', default=False, action='store_true')
   parser.add_argument('command', help=validCommands)
   parser.add_argument('args', nargs='*', help='command-specific arguments')
@@ -672,7 +673,13 @@ def main():
       break
   if func is None:
     fail('unrecognized command %s. valid commands are %s' % (cmd, validCommands))
-  func()
+  try:
+    func()
+  except Exception as e:
+    err('%s raised exception %s' % (cmd, str(e)))
+    if ARGS.verbose:
+      traceback.print_exc()
+    sys.exit(1)
     
 if __name__ == '__main__':
   main()
