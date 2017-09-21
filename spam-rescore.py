@@ -289,7 +289,9 @@ def stats(msgs):
   return len(msgs), minval, maxval, median(nums), mean(nums)
 
 def moveMessages(imap, messages, toMailbox):
-  # FIXME: ensure toMailbox exists
+  if not imap.folder_exists(toMailbox):
+    imap.create_folder(toMailbox)
+    info('created folder "%s" for suspect messages' % toMailbox)
   imap.select_folder(ARGS.mailbox, readonly=False)
   ret = imap.copy(messages, toMailbox)
   info('copy returned', ret)
@@ -407,6 +409,8 @@ def cmd_list():
     table.set_precision(1)
     for m in msgs:
       if m.score is not None and m.score < ARGS.score:
+        if ARGS.verbose:
+          verbose('skipping message id=%d date=%s score=%s below threshold of %s' % (m.id, m.date, m.scoreStr(), str(ARGS.score)))
         continue
       table.add_row([m.date, m.id, m.scoreStr(), m.headers.get('From', None), m.headers.get('Subject', None), m.flags ])
     info(table.draw())
@@ -554,70 +558,22 @@ def daemonLoop():
 
 # https://stackoverflow.com/questions/13106221/how-do-i-set-up-a-daemon-with-python-daemon/40536099#40536099  
 def cmd_daemon():
+  # FIXME-ish: configurable pidfile
   pidf = '/tmp/spam-rescore.pid'
   print('starting daemon with pidfile=%s and log file=%s' % (pidf, ARGS.logfile))
   with daemon.DaemonContext(pidfile=pidfile.TimeoutPIDLockFile(pidf)) as context:
     daemonLoop()
       
 def cmd_hack():
-  print ARGS.since
-  print parseSince('-10d')
-  print parseSince('2w')
-  print parseSince('3M')
-  global CONFIG
-  print 'config', CONFIG
-  print 'account[0]', CONFIG.accounts[0]
-  info('Info level', 'a', 'b', 'c')
-  warn('Warn level', 'a', 'b', 'c')
-  err('Error level', 'a', 'b', 'c', {'d': 'e', 'f': 13})
-  verbose('Verbose level', 'a', 'b', 'c')
-  sys.exit(1)
-  
-  #info('hack running')
-#  host, ip = hostAndIp('from sertcell.date (unknown [193.124.186.130])')
-#  print host, ip
-  scoreHeader = """No, score=0.0 required=5.0 tests=BAYES_50,HTML_IMAGE_ONLY_16,
-  HTML_MESSAGE,HTML_SHORT_LINK_IMG_2,RP_MATCHES_RCVD,SPF_PASS,T_DKIM_INVALID,
-  URIBL_BLOCKED,URIBL_DBL_SPAM autolearn=no autolearn_force=no version=3.4.1"""
-  receivedHeader = """from oiuuu3.baldnesa.cu.cc (unknown [83.167.224.177])
-	by moonspider.com (Postfix) with SMTP id 3B7C3D0041
-	for <dave@moonspider.com>; Thu, 16 Mar 2017 14:39:23 +0000 (UTC)"""
-
-  print 'recvd date', dateFromReceivedHeader(receivedHeader)
-  sys.exit(1)
-  score, req = scoreFromHeader(scoreHeader)
-  print 'score', score, 'required', req
-
-  now = datetime.now()
-  print now
-  ago = now - timedelta(hours=3)
-  print ago
-  
-  imap = connectIMAP(CONFIG.accounts[0])
+  account = CONFIG.accounts[0]
+  imap = connectIMAP(account)
   try:
-    ARGS.mailbox = 'move-src'
-    imap.select_folder(ARGS.mailbox)
-    #print imap.capabilities()
-    msgs, _ = iterMessages(imap, lambda x: None)
-    print '---------------'
-    #m = msgs[0]
-    #print 'deleting %s/%s' % (m.id, m.headers.get('Subject', None))
-    #imap.delete_messages(m.id)
-    #raise Exception('deliberate break')
-    m = msgs[len(msgs)-1]
-    print 'moving %s/%s' % (str(m.id), m.header('Subject'))
-    print 'copy -> dest:', imap.copy(m.id, 'move-dest')
-    print 'delete', imap.delete_messages(m.id)
-    # imap.expunge()
-    imap._imap.uid('expunge', m.id)
-    
-    #for m in msgs:
-    #  print str(m)
-    #print('----------------')
-    #ids = [ m.id for m in msgs ]
-    #flags = imap.get_flags(ids)
-    #for id in flags.keys():
-    #  print id, str(flags[id])
+    spamFolder = account.spamFolder
+    info('check if %s exists:' % spamFolder)
+    exists = imap.folder_exists(spamFolder)
+    info('?', exists)
+    if not exists:
+      info('create folder:', imap.create_folder(spamFolder))
   finally:
     imap.logout()
   
@@ -638,7 +594,6 @@ def main():
   global OUTPUT
   OUTPUT = TermOutput()
   validCommands = ''
-  #for c in COMMANDS:
   for c in COMMANDS:
     if validCommands != '':
       validCommands = validCommands + ' | '
@@ -659,7 +614,6 @@ def main():
   parser.add_argument('-n', '--num', help='maximum number of messages to examine', default=400, type=int)
   parser.add_argument('-m', '--mailbox', help='specify mailbox', default='INBOX')
   parser.add_argument('-l', '--logfile', help='specify log file (in daemon mode)', default=os.environ['HOME'] + '/logs/spam-rescore.log')
-  #parser.add_argument('-d', '--daemon', help='detach from terminal and run as daemon', default=False, action='store_true')
   parser.add_argument('command', help=validCommands)
   parser.add_argument('args', nargs='*', help='command-specific arguments')
   ARGS = parser.parse_args()
