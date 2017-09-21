@@ -289,9 +289,12 @@ def stats(msgs):
   return len(msgs), minval, maxval, median(nums), mean(nums)
 
 def moveMessages(imap, messages, toMailbox):
-  if not imap.folder_exists(toMailbox):
+  if not imap.folder_exists(toMailbox) and not ARGS.dry_run:
     imap.create_folder(toMailbox)
     info('created folder "%s" for suspect messages' % toMailbox)
+  if toMailbox == ARGS.mailbox:
+    warn('not moving messages: source mailbox == dest mailbox ("%s")' % toMailbox)
+    return
   imap.select_folder(ARGS.mailbox, readonly=False)
   ret = imap.copy(messages, toMailbox)
   info('copy returned', ret)
@@ -446,7 +449,7 @@ def rescoreAccount(account):
         if newScore > 5.0:
           newSpam += 1
           spamIds.append(m.id)
-          info('new spam found, score %.1f for %s/"%s"' % (newScore, m.id, subject))
+          info('new spam found, score changed %s -> %.1f for %s/"%s"' % (m.scoreStr(), newScore, m.id, subject))
       elif newScore < m.score:
         scoreDown += 1
         if m.score > 5.0 and newScore < 5.0:
@@ -460,8 +463,11 @@ def rescoreAccount(account):
         verbose('unchanged at %s for %s/"%s"' % (m.scoreStr(), m.id, subject))
 
     if len(spamIds) > 0:
-      info('moving %d message(s) to %s' % (len(spamIds), account.spamFolder))
-      moveMessages(imap, spamIds, account.spamFolder)
+      if ARGS.dry_run:
+        info('Found %d spam messages, but not moving them (--dry-run specified)' % len(spamIds))
+      else:
+        info('moving %d message(s) to %s' % (len(spamIds), account.spamFolder))
+        moveMessages(imap, spamIds, account.spamFolder)
     else:
       info('NO NEW SPAM found on this run (checked %d message(s))' % len(msgs))
   finally:
@@ -611,9 +617,10 @@ def main():
                       default=datetime.now() - timedelta(days=1), type=parseSince)
   parser.add_argument('--score', help='score filter, skip messages with score <=filter (used in list,rescore,daemon). Default=0.0', \
                       default=0.0, type=float)
-  parser.add_argument('-n', '--num', help='maximum number of messages to examine', default=400, type=int)
+  parser.add_argument('--num', help='maximum number of messages to examine', default=400, type=int)
   parser.add_argument('-m', '--mailbox', help='specify mailbox', default='INBOX')
   parser.add_argument('-l', '--logfile', help='specify log file (in daemon mode)', default=os.environ['HOME'] + '/logs/spam-rescore.log')
+  parser.add_argument('-n', '--dry-run', help='dry run; do not move/delete messages', default=False, action='store_true')
   parser.add_argument('command', help=validCommands)
   parser.add_argument('args', nargs='*', help='command-specific arguments')
   ARGS = parser.parse_args()
