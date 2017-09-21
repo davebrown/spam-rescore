@@ -220,7 +220,6 @@ def dateFromReceivedHeader(header):
 
 TIME_PAT = re.compile('([-]?\d+)([dwmDWM])')
 def parseSince(s):
-  print 'parse since "%s"' % s
   m = TIME_PAT.match(s)
   if m:
     num = -abs(int(m.group(1))) # assume we want a date in the past
