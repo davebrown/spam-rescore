@@ -526,7 +526,6 @@ def cmd_received():
   
   
 def cmd_stats():
-  info('cmd_stats entry')
   msgs = iterMessages(CONFIG.accounts[0])
   months = {}
   for m in msgs:
@@ -545,7 +544,7 @@ def cmd_stats():
     count, minval, maxval, med, avg = stats(msgs)
     table.add_row([month, count, minval, maxval, med, avg])
 
-  info('stats\n%s' % table.draw())
+  info('monthly spam score stats on %s\n%s' % (ARGS.mailbox, table.draw()))
 
 def daemonLoop():
   global OUTPUT
@@ -584,13 +583,13 @@ def cmd_hack():
   
 
 COMMANDS = [
-  cmd_rescore,
-  cmd_received,
-  cmd_stats,
-  cmd_hack,
-  cmd_list,
-  cmd_daemon,
-  cmd_move
+  (cmd_rescore, True),
+  ( cmd_received, False),
+  ( cmd_stats, True),
+  ( cmd_hack, False),
+  ( cmd_list, True),
+  ( cmd_daemon, True),
+  ( cmd_move, False)
 ]
 
 def main():
@@ -600,9 +599,11 @@ def main():
   OUTPUT = TermOutput()
   validCommands = ''
   for c in COMMANDS:
+    if not c[1]:
+      continue
     if validCommands != '':
       validCommands = validCommands + ' | '
-    validCommands = validCommands + ' ' + c.__name__[4:].replace('_', '-')
+    validCommands = validCommands + ' ' + c[0].__name__[4:].replace('_', '-')
   
   parser = argparse.ArgumentParser(
     description='spam scores',
@@ -628,6 +629,7 @@ def main():
   cmd = ARGS.command.replace('-', '_')
   func = None
   for f in COMMANDS:
+    f = f[0]
     if cmd == f.__name__[4:]:
       func = f
       break
