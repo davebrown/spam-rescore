@@ -463,7 +463,7 @@ def rescoreAccount(account):
 
     if len(spamIds) > 0:
       if ARGS.dry_run:
-        info('Found %d spam messages, but not moving them (--dry-run specified)' % len(spamIds))
+        info('Found %d spam message(s), but not moving them (--dry-run specified)' % len(spamIds))
       else:
         info('moving %d message(s) to %s' % (len(spamIds), account.spamFolder))
         moveMessages(imap, spamIds, account.spamFolder)
@@ -606,7 +606,7 @@ def main():
   
   parser = argparse.ArgumentParser(
     description='spam scores',
-    epilog='figure out near-miss spam score threshold',
+    epilog='analyze and re-evaluate spam profile of IMAP mailboxes',
     usage="%(prog)s [options] <command>"
     )
   HOME = os.environ['HOME']
