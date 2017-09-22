@@ -29,6 +29,10 @@ Install its dependencies:
 You will want to set up a `$HOME/.spam-config.yaml` file in the home directory of the user running spam-rescore.py. (Aside: passing credentials on the command line is a bad idea, since they will appear in your shell history and be visible to `ps`).
 
 ```
+# spamc arg: max message size, in bytes. default=2048000 (2 MB)
+max-message-size: 4096000
+# spamc arg: -u <username> (run as <username>, usually to pick up their Bayes filter)
+spamc-as-user: true
 accounts:
   - email: test@example.com
     password: 's3cr3t'
