@@ -143,6 +143,11 @@ def _(data, name, required=True):
     raise Exception('missing required config field "%s"' % name)
   return ret
 
+def str2bool(v):
+  if isinstance(v, bool):
+    return v
+  return v.lower() in ("yes", "true", "t", "1")
+
 class Account(object):
 
   def __init__(self, data):
@@ -169,6 +174,8 @@ class Config(object):
     if accts is None:
       raise Exception('no accounts in config')
     self.accounts = [ Account(a) for a in accts ]
+    self.spamcAsUser = str2bool(data.get('spamc-as-user', 'false'))
+    self.maxMessageSize = int(data.get('max-message-size', 2048000)) # default ot 2 MB
 
 DEFAULT_CONFIG = {
   'accounts': []
@@ -377,14 +384,20 @@ def hostAndIp(rcvd):
   return host, ip
 
 SA_SCORE_PAT = re.compile('^([+-]?\d+\.?\d*)/.*')
-def run_sa(msg):
-  with TemporaryFile(mode='r+b', suffix='.eml', prefix='spamcheck') as tf:
+def run_sa(msg, username):
+  global CONFIG
+  with TemporaryFile(mode='r+b', suffix='.eml', prefix='spam-rescore') as tf:
     tf.write(msg['headers'])
     tf.write(msg['body[text]'])
     tf.seek(0)
     try:
       #output = check_output(['sed', '-E', 's/score=([0-9]+\.[0-9]+)/score=3.14159/g'], stdin=tf, stderr=STDOUT)
-      output = check_output(['spamc', '-c'], stdin=tf, stderr=STDOUT)
+      args = ['spamc', '--check', '--max-size', '%s' % CONFIG.maxMessageSize]
+      if CONFIG.spamcAsUser:
+        args.append('--username')
+        args.append(username)
+      #verbose('running sa as:', args)
+      output = check_output(args, stdin=tf, stderr=STDOUT)
     except CalledProcessError as cpe:
       output = cpe.output.replace('\n', '')
       verbose('sa returned code=%d body="%s" for message %s' % (cpe.returncode, output, msg.id))
@@ -441,7 +454,7 @@ def rescoreAccount(account):
       if m.score is not None and m.score < ARGS.score:
         skipped += 1
         continue
-      newScore = run_sa(m)
+      newScore = run_sa(m, account.username)
       subject = m.header('Subject')
       if newScore > m.score:
         scoreUp += 1
