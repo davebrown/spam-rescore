@@ -127,6 +127,27 @@ OUT of 4 message(s):
 
 The `daemon` command echos its PID file and log file before detaching from the terminal.
 
+Assuming you've been using SpamAssassin a while, and you're a pack rat who saves most of your email, you can aggregated metrics of the SA scores in a mailbox with the `stats` command. E.g., over the prior 12 months for your Inbox:
+
+**`./spam-rescore.py --since 12m --score -10 --num 2000 --mailbox INBOX stats`**
+
+```
+monthly spam score stats on INBOX
+month     count     min   max   median   mean
+2016-10      80    -9.4   0.6     -2.7   -3.5
+2016-11     168    -9.4   1.2     -3.5   -4.1
+2016-12     117    -9.6   3.2     -2.6   -3.4
+2017-1      132    -9.6   0.3     -2.9   -3.3
+2017-2      126   -10.1   3.8     -2.6   -3.0
+2017-3      248    -9.6   2.9     -2.8   -3.0
+2017-4      126   -10.1   1.1     -2.6   -2.8
+2017-5       75   -10.1   1.0     -3.9   -3.7
+2017-6      147    -9.6   1.0     -2.6   -3.1
+2017-7       85    -9.6   1.2     -2.6   -3.1
+2017-8       89    -7.8   4.9     -1.4   -1.4
+2017-9      191   -10.4   1.7     -1.9   -2.4
+```
+
 ## RFE
 
 The tool suffices for the needs of the author, but some possible enhancements have been listed in the issues of this repo https://github.com/davebrown/spam-rescore/issues PR's are welcome.
