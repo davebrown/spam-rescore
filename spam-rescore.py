@@ -344,7 +344,10 @@ def iterMessages(accountOrClient, additionalFields=[]):
   parser = EmailParser()
   msgs = []
   for msgId, data in messages.iteritems():
-    rawHeaders = data['BODY[HEADER]']
+    rawHeaders = data.get('BODY[HEADER]', None)
+    if rawHeaders is None:
+      warn('no HEADER field on msg %s, skipping it' % str(msgId))
+      continue
     headers = parser.parsestr(rawHeaders, True)
     spamHeader = headers.get('X-Spam-Status', None)
     receivedHeader = headers.get('Received', None)
