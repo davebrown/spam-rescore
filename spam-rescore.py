@@ -630,29 +630,32 @@ def cmd_daemon():
           'filename': ARGS.logfile,
           'maxBytes': 2 * 1024 * 1024,
           'backupCount': 3
-        },
-        'email': {
-          'level': 'INFO',
-          'formatter': 'standard',
-          'class': 'logging.handlers.SMTPHandler',
-          'mailhost': CONFIG.getMailhost(),
-          #'mailhost': ('localhost', 1025),
-          'fromaddr': 'spam-rescore@%s' % CONFIG.getMailhost(),
-          'toaddrs': [ CONFIG.emailAlert ],
-          'subject': 'Message from Spam-Rescore'
         }
       },
       'loggers': {
         '': {
           'handlers': ['default'],
           'level': logLevel
-        },
-        'email': {
-          'handlers': ['email'],
-          'level': 'INFO'
         }
       }
     }
+    if CONFIG.emailAlert:
+      LOG_CONFIG['handlers']['email'] = {
+        'level': 'INFO',
+        'formatter': 'standard',
+        'class': 'logging.handlers.SMTPHandler',
+        'mailhost': CONFIG.getMailhost(),
+        #'mailhost': ('localhost', 1025),
+        'fromaddr': 'spam-rescore@%s' % CONFIG.getMailhost(),
+        'toaddrs': [ CONFIG.emailAlert ],
+        'subject': 'Message from Spam-Rescore'
+      }
+      LOG_CONFIG['loggers']['email'] = {
+        'handlers': ['email'],
+        'level': 'INFO'
+      }
+    else:
+      warn('SMTP logging disabled; set "email-alert", optionally "mailhost" in config to enable')
     logging.config.dictConfig(LOG_CONFIG)
 
     daemonLoop()
