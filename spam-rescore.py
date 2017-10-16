@@ -21,6 +21,7 @@ from time import sleep
 import time
 from texttable import Texttable
 import logging
+import logging.config
 import daemon
 from daemon import pidfile
 import errno
@@ -176,6 +177,16 @@ class Config(object):
     self.accounts = [ Account(a) for a in accts ]
     self.spamcAsUser = str2bool(data.get('spamc-as-user', 'false'))
     self.maxMessageSize = int(data.get('max-message-size', 2048000)) # default ot 2 MB
+    self.emailAlert = data.get('email-alert', None)
+    self.mailhost = data.get('mailhost', None)
+
+  def getMailhost(self):
+    ret = self.mailhost
+    if not ret and self.emailAlert:
+      if not '@' in self.emailAlert:
+        raise Exception('invalid email address config value for "email-alert": "%s"' % self.emailAlert)
+      ret = self.emailAlert.split('@')[1]
+    return ret
 
 DEFAULT_CONFIG = {
   'accounts': []
@@ -436,8 +447,10 @@ def cmd_list():
     imap.logout()
   
 def cmd_rescore():
+  ret = {}
   for account in CONFIG.accounts:
-    rescoreAccount(account)
+    ret[account.email] = rescoreAccount(account)
+  return ret
 
 def rescoreAccount(account):  
   info('======= RESCORE %s =========' % account.email)
@@ -495,6 +508,7 @@ def rescoreAccount(account):
   info(' %d score increased' % scoreUp)
   info(' %d score decreased' % scoreDown)
   info(' %d score unchanged' % scoreSame)
+  return newSpam
   
 def cmd_move():
   if len(ARGS.args) != 2:
@@ -565,15 +579,30 @@ def cmd_stats():
 def daemonLoop():
   global OUTPUT
   OUTPUT = LogOutput(ARGS.logfile)
+  emailLog = logging.getLogger('email')
+  #emailLog.info('daemon starting')
+  startTime = datetime.now()
+  counts = Counter()
   OUTPUT.info('============== daemon starting ===============')
   while True:
     try:
       info('==== daemon loop running at %s ====' % str(datetime.now()))
-      cmd_rescore()
-      time.sleep(10 * 60)
+      ret = cmd_rescore()
+      for email in ret.keys():
+        counts[email] += ret[email]
+      if datetime.now() - timedelta(hours=24) > startTime:
+        msg = '\nspam-rescore moves for the last 24 hours:\n'
+        for email in counts.keys():
+          msg += '%s: %d message(s)\n' % (email, counts[email])
+        emailLog.info(msg)
+        startTime = datetime.now()
+        counts = Counter()
+
+      time.sleep(5 * 60)
     except Exception as e:
       err('Exception in daemon loop', e)
       logging.error(e, exc_info=True)
+      emailLog.critical('DAEMON EXITING: %s' % str(e))
       fail('Exception in daemon loop')
 
 # https://stackoverflow.com/questions/13106221/how-do-i-set-up-a-daemon-with-python-daemon/40536099#40536099  
@@ -582,21 +611,66 @@ def cmd_daemon():
   pidf = '/tmp/spam-rescore.pid'
   print('starting daemon with pidfile=%s and log file=%s' % (pidf, ARGS.logfile))
   with daemon.DaemonContext(pidfile=pidfile.TimeoutPIDLockFile(pidf)) as context:
+    logLevel = 'INFO'
+    if ARGS.verbose:
+      logLevel = 'DEBUG'
+
+    LOG_CONFIG = {
+      'version': 1,
+      'formatters': {
+          'standard': {
+              'format': '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+          },
+      },
+      'handlers': {
+        'default': {
+          'level': logLevel,
+          'formatter': 'standard',
+          'class': 'logging.handlers.RotatingFileHandler',
+          'filename': ARGS.logfile,
+          'maxBytes': 2 * 1024 * 1024,
+          'backupCount': 3
+        },
+        'email': {
+          'level': 'INFO',
+          'formatter': 'standard',
+          'class': 'logging.handlers.SMTPHandler',
+          'mailhost': CONFIG.getMailhost(),
+          #'mailhost': ('localhost', 1025),
+          'fromaddr': 'spam-rescore@%s' % CONFIG.getMailhost(),
+          'toaddrs': [ CONFIG.emailAlert ],
+          'subject': 'Message from Spam-Rescore'
+        }
+      },
+      'loggers': {
+        '': {
+          'handlers': ['default'],
+          'level': logLevel
+        },
+        'email': {
+          'handlers': ['email'],
+          'level': 'INFO'
+        }
+      }
+    }
+    logging.config.dictConfig(LOG_CONFIG)
+
     daemonLoop()
-      
+
 def cmd_hack():
-  account = CONFIG.accounts[0]
-  imap = connectIMAP(account)
-  try:
-    spamFolder = account.spamFolder
-    info('check if %s exists:' % spamFolder)
-    exists = imap.folder_exists(spamFolder)
-    info('?', exists)
-    if not exists:
-      info('create folder:', imap.create_folder(spamFolder))
-  finally:
-    imap.logout()
-  
+  #account = CONFIG.accounts[0]
+  #imap = connectIMAP(account)
+  #try:
+  #  spamFolder = account.spamFolder
+  #  info('check if %s exists:' % spamFolder)
+  #  exists = imap.folder_exists(spamFolder)
+  #  info('?', exists)
+  #  if not exists:
+  #    info('create folder:', imap.create_folder(spamFolder))
+  #finally:
+  #  imap.logout()
+
+  pass
 
 COMMANDS = [
   (cmd_rescore, True),
