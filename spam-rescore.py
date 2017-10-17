@@ -91,17 +91,18 @@ class TermOutput(Output):
 
 class LogOutput(Output):
 
-  def __init__(self, logFile='/tmp/spam-rescore.log'):
+  def __init__(self, logFile='/tmp/spam-rescore.log', doConfig=True):
     global ARGS
     logLevel = logging.INFO
     if ARGS.verbose:
       logLevel = logging.DEBUG
     mkdirs(os.path.dirname(logFile))
-    logging.basicConfig(
-      format='%(asctime)s - %(name)s - %(levelname)s: %(message)s',
-      filename=logFile,
-      level=logLevel
-    )
+    if doConfig:
+      logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s: %(message)s',
+        filename=logFile,
+        level=logLevel
+      )
     self.logFile = logFile
     self.logger = logging.getLogger('spam-rescore')
   
@@ -577,8 +578,6 @@ def cmd_stats():
   info('monthly spam score stats on %s\n%s' % (ARGS.mailbox, table.draw()))
 
 def daemonLoop():
-  global OUTPUT
-  OUTPUT = LogOutput(ARGS.logfile)
   emailLog = logging.getLogger('email')
   #emailLog.info('daemon starting')
   startTime = datetime.now()
@@ -607,6 +606,7 @@ def daemonLoop():
 
 # https://stackoverflow.com/questions/13106221/how-do-i-set-up-a-daemon-with-python-daemon/40536099#40536099  
 def cmd_daemon():
+  global OUTPUT
   # FIXME-ish: configurable pidfile
   pidf = '/tmp/spam-rescore.pid'
   print('starting daemon with pidfile=%s and log file=%s' % (pidf, ARGS.logfile))
@@ -657,6 +657,7 @@ def cmd_daemon():
     else:
       warn('SMTP logging disabled; set "email-alert", optionally "mailhost" in config to enable')
     logging.config.dictConfig(LOG_CONFIG)
+    OUTPUT = LogOutput(ARGS.logfile, False)
 
     daemonLoop()
 
