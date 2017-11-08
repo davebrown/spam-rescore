@@ -381,7 +381,9 @@ def iterMessages(accountOrClient, additionalFields=[]):
   flags = imap.get_flags(messageIds)
   
   for id in flags.keys():
-    msgDict[id].flags = flags[id]
+    msg = msgDict.get(id, None)
+    if msg:
+      msg.flags = flags[id]
   if doLogout:
     imap.logout()
     info('logged out')
