@@ -25,6 +25,7 @@ import logging.config
 import daemon
 from daemon import pidfile
 import errno
+from graphitesend import GraphiteClient
 
 def catArgs(*args):
   return ' '.join([str(e) for e in args])
@@ -180,6 +181,8 @@ class Config(object):
     self.maxMessageSize = int(data.get('max-message-size', 2048000)) # default ot 2 MB
     self.emailAlert = data.get('email-alert', None)
     self.mailhost = data.get('mailhost', None)
+    self.graphiteHost = data.get('graphite-host', None)
+    self.graphitePort = int(data.get('graphite-port', 2003))
 
   def getMailhost(self):
     ret = self.mailhost
@@ -348,7 +351,13 @@ def iterMessages(accountOrClient, additionalFields=[]):
 
   info('searching messages since %s' % str(ARGS.since))
   messageIds = imap.sort(['REVERSE DATE'], ['SINCE', ARGS.since])
-  
+  ret = hydrateMessages(imap, messageIds, additionalFields)
+  if doLogout:
+    imap.logout()
+    info('logged out')
+  return ret
+
+def hydrateMessages(imap, messageIds, additionalFields=[]):
   info('have %d messages in folder %s' % (len(messageIds), ARGS.mailbox))
   fields = ['BODY[HEADER]'] + additionalFields
   messages = imap.fetch(messageIds[:ARGS.num], fields)
@@ -384,9 +393,6 @@ def iterMessages(accountOrClient, additionalFields=[]):
     msg = msgDict.get(id, None)
     if msg:
       msg.flags = flags[id]
-  if doLogout:
-    imap.logout()
-    info('logged out')
   return msgs
 
 # from dortprahm.faith (unknown [23.95.188.156])  
@@ -425,7 +431,40 @@ def run_sa(msg, username):
     else:
       raise Exception('no score in sa output "%s"' % output)
 
+METRICS_PAT = re.compile(r'([\w\.-]+@[\w\.-]+): (\d+) message\(s\)')
+# kludge to get data on move from historical log messages we've sent
+def cmd_metrics():
+  imap = connectIMAP(CONFIG.accounts[0])
+  # open readonly b/c otherwise messages will be marked as read '\\Seen'
+  imap.select_folder(ARGS.mailbox, readonly=True)
+  #msgIds = imap.search(['SUBJECT', 'Message from Spam-Rescore'])
+  msgIds = imap.search(['FROM', 'spam-rescore@localhost'])
+  info('got %d metrics emails' % len(msgIds), msgIds)
+  msgs = hydrateMessages(imap, msgIds, ['BODY[TEXT]'])
+  msgs = sorted(msgs, key=lambda m: m.date)
+  metrics = []
+  for m in msgs:
+    matches = METRICS_PAT.findall(m['body[text]'])
+    if not matches or len(matches) == 0:
+      warn('no metrics match in date/body %s/\n%s\nignoring...' % (str(m.date), m['body[text]']))
+      continue
+    total = 0
+    epochTS = int(m.date.strftime('%s'))
+    for match in matches:
+      total += int(match[1])
+      email = match[0].replace('@', '_').replace('.', '_')
+      metrics.append(('daily.by_email.' + email, int(match[1]), epochTS))
+    info('%s epoch=%d %s\n%s\ntotal=%d\n--------' % (str(m.date), epochTS, m.headers.get('Subject', None), matches, total))
+    metrics.append(('daily.total', total, epochTS))
+
+  info('metrics payload', metrics)
+  gc = GraphiteClient(prefix='spam', graphite_server=CONFIG.graphiteHost, graphite_port=CONFIG.graphitePort, system_name='')
+  gc.send_list(metrics)
+
 def cmd_list():
+  imap = connectIMAP(CONFIG.accounts[0])
+  # open readonly b/c otherwise messages will be marked as read '\\Seen'
+  imap.select_folder(ARGS.mailbox, readonly=True)
 
   imap = connectIMAP(CONFIG.accounts[0])
   # open readonly b/c otherwise messages will be marked as read '\\Seen'
@@ -455,7 +494,7 @@ def cmd_rescore():
     ret[account.email] = rescoreAccount(account)
   return ret
 
-def rescoreAccount(account):  
+def rescoreAccount(account):
   info('======= RESCORE %s =========' % account.email)
   imap = connectIMAP(account)
   # FIXME: should it have per-account mailbox(es) to scan?
@@ -579,6 +618,22 @@ def cmd_stats():
 
   info('monthly spam score stats on %s\n%s' % (ARGS.mailbox, table.draw()))
 
+def recordDailyMetrics(emailLog, counts):
+  msg = '\nspam-rescore moves for the last 24 hours:\n'
+  total = 0
+  metrics = []
+  for email in counts.keys():
+    msg += '%s: %d message(s)\n' % (email, counts[email])
+    metrics.append(('daily.by_email.' + email.replace('@', '_').replace('.', '_'), counts[email]))
+    total += counts[email]
+
+  emailLog.info(msg)
+  metrics.append(('daily.total', total))
+
+  if CONFIG.graphiteHost is not None:
+    gc = GraphiteClient(prefix='spam', graphite_server=CONFIG.graphiteHost, graphite_port=CONFIG.graphitePort, system_name='')
+    gc.send_list(metrics)
+  
 def daemonLoop():
   emailLog = logging.getLogger('email')
   #emailLog.info('daemon starting')
@@ -592,10 +647,7 @@ def daemonLoop():
       for email in ret.keys():
         counts[email] += ret[email]
       if datetime.now() - timedelta(hours=24) > startTime:
-        msg = '\nspam-rescore moves for the last 24 hours:\n'
-        for email in counts.keys():
-          msg += '%s: %d message(s)\n' % (email, counts[email])
-        emailLog.info(msg)
+        recordDailyMetrics(emailLog, counts)
         startTime = datetime.now()
         counts = Counter()
 
@@ -676,7 +728,28 @@ def cmd_hack():
   #finally:
   #  imap.logout()
 
-  pass
+  #data = """spam-rescore moves for the last 24 hours:
+#squared@moonspider.com: 0 message(s)
+#dave@moonspider.com: 16 message(s)
+#laura@moonspider.com: 17 message(s)"""
+  #data = "foo@bar.com: 2 message(s)"
+  #m = METRICS_PAT.findall(data)
+  #info(m)
+  #  for s in data.split('\n'):
+#    info('try "%s":' % s)
+#  gc = GraphiteClient(prefix='test', graphite_server=CONFIG.graphiteHost, graphite_port=CONFIG.graphitePort, system_name='')
+#  for i in range(10):
+#    ts = time.time() - 1000 * i - i
+#    info('metric: %d' % i)
+#    gc.send('foo', i, ts)
+
+  log = logging.getLogger('hack')
+  log.info('hack running, conf is %s', str(CONFIG))
+  counts = Counter()
+  counts['foo@bar.com'] += 77
+  counts['bar@baz.com'] += 88
+  recordDailyMetrics(log, counts)
+
 
 COMMANDS = [
   (cmd_rescore, True),
@@ -685,7 +758,8 @@ COMMANDS = [
   ( cmd_hack, False),
   ( cmd_list, True),
   ( cmd_daemon, True),
-  ( cmd_move, False)
+  ( cmd_move, False),
+  ( cmd_metrics, False)
 ]
 
 def main():
