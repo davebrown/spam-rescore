@@ -6,6 +6,9 @@
 
 In practice, many *near spam* messages (those with spam scores close to, but not above, the default threshold of `5.0` for SpamAssassin) will get pushed over the threshold a short time later, after the various blacklist tests have been updated. Hopefully, before end users ever see their inbox marred by a false negative.
 
+![spam rescore metrics](https://moonspider.com/spam-rescore-metrics.png "spam rescore metrics")
+<p align="center">Daily spam-rescore metrics for an installation with 2 accounts</p>
+
 ## Mechanics
 
 * Python script
