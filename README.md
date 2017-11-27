@@ -36,6 +36,8 @@ You will want to set up a `$HOME/.spam-config.yaml` file in the home directory o
 max-message-size: 4096000
 # spamc arg: -u <username> (run as <username>, usually to pick up their Bayes filter)
 spamc-as-user: true
+# poll interval, in seconds. default = 5 minutes
+poll-seconds: 120
 # email log on CRITICAL messages, and daily stats summary of activity
 email-alert: alerts@example.com
 # SMTP host to use when delivering above email
