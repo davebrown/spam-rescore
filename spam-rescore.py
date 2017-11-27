@@ -443,6 +443,29 @@ def run_sa(msg, username):
     else:
       raise Exception('no score in sa output "%s"' % output)
 
+def hoursMetricsAccount(imap, counter):
+  imap.select_folder(ARGS.mailbox, readonly=True)
+  msgIds = imap.sort('ARRIVAL')
+  msgs = hydrateMessages(imap, msgIds)
+  for m in msgs:
+    if not m.date:
+      continue
+    #print m.id, m.date, m.date.hour, m.header('Subject')
+    counter[m.date.hour] += 1
+  
+def cmd_hours_metrics():
+  counter = Counter()
+  for account in CONFIG.accounts:
+    info(account.email, ':')
+    imap = connectIMAP(account)
+    try:
+      hoursMetricsAccount(imap, counter)
+    finally:
+      imap.logout()
+    # open readonly b/c otherwise messages will be marked as read '\\Seen'
+  for h in range(23):
+    info('%d: %d' % (h, counter[h]))
+
 METRICS_PAT = re.compile(r'([\w\.-]+@[\w\.-]+): (\d+) message\(s\)')
 # kludge to get data on move from historical log messages we've sent
 def cmd_metrics():
@@ -470,8 +493,8 @@ def cmd_metrics():
     metrics.append(('daily.total', total, epochTS))
 
   info('metrics payload', metrics)
-  gc = GraphiteClient(prefix='spam', graphite_server=CONFIG.graphiteHost, graphite_port=CONFIG.graphitePort, system_name='')
-  gc.send_list(metrics)
+  #gc = GraphiteClient(prefix='spam', graphite_server=CONFIG.graphiteHost, graphite_port=CONFIG.graphitePort, system_name='')
+  #gc.send_list(metrics)
 
 def cmd_list():
   imap = connectIMAP(CONFIG.accounts[0])
@@ -520,8 +543,8 @@ def rescoreAccount(account):
     scoreSame = 0
     skipped = 0
     spamIds = []
-    # record how 'old' each spam message is when we detect it
-    ageMetrics = []
+    # track spam messages so we can track various metrics on them
+    spamMessages = []
     for m in msgs:
       if m.score is not None and m.score < ARGS.score:
         skipped += 1
@@ -534,7 +557,7 @@ def rescoreAccount(account):
           newSpam += 1
           spamIds.append(m.id)
           info('new spam found, score changed %s -> %.1f for %s/"%s"' % (m.scoreStr(), newScore, m.id, subject))
-          ageMetrics.append(m.ageMinutes())
+          spamMessages.append(m)
       elif newScore < m.score:
         scoreDown += 1
         if m.score > 5.0 and newScore < 5.0:
@@ -553,7 +576,7 @@ def rescoreAccount(account):
       else:
         info('moving %d message(s) to %s' % (len(spamIds), account.spamFolder))
         moveMessages(imap, spamIds, account.spamFolder)
-        recordDurationMetrics(ageMetrics)
+        recordSpamMetrics(spamMessages)
     else:
       info('NO NEW SPAM found on this run (checked %d message(s))' % len(msgs))
   finally:
@@ -634,14 +657,15 @@ def cmd_stats():
 
   info('monthly spam score stats on %s\n%s' % (ARGS.mailbox, table.draw()))
 
-def recordDurationMetrics(durations):
+def recordSpamMetrics(messages):
   if CONFIG.graphiteHost is not None:
-    metrics = []
-    for d in durations:
-      if d:
-        metrics.append(('duration.detect_minutes', d))
     gc = GraphiteClient(prefix='spam', graphite_server=CONFIG.graphiteHost, graphite_port=CONFIG.graphitePort, system_name='')
-    gc.send_list(metrics)
+    durations = []
+    for m in messages:
+      if m.date:
+        durations.append(('duration.detect_minutes', m.ageMinutes()))
+        gc.send('daily.%d.count' % m.date.hour, 1)
+    gc.send_list(durations)
 
 def recordDailyMetrics(emailLog, counts):
   msg = '\nspam-rescore moves for the last 24 hours:\n'
@@ -768,12 +792,19 @@ def cmd_hack():
 #    info('metric: %d' % i)
 #    gc.send('foo', i, ts)
 
-  log = logging.getLogger('hack')
-  log.info('hack running, conf is %s', str(CONFIG))
-  counts = Counter()
-  counts['foo@bar.com'] += 77
-  counts['bar@baz.com'] += 88
-  recordDailyMetrics(log, counts)
+#  log = logging.getLogger('hack')
+#  log.info('hack running, conf is %s', str(CONFIG))
+#  counts = Counter()
+#  counts['foo@bar.com'] += 77
+#  counts['bar@baz.com'] += 88
+#  recordDailyMetrics(log, counts)
+  gc = GraphiteClient(prefix='test.by_minute', graphite_server=CONFIG.graphiteHost, graphite_port=CONFIG.graphitePort, system_name='')
+  for i in range(1, 11):
+    info('%d ' % i)
+    gc.send('counters.a.count', i)
+    gc.send('counters.b.count', i * 2)
+    gc.send('counters.c.count', i * 3)
+    time.sleep(1)
 
 
 COMMANDS = [
@@ -784,7 +815,8 @@ COMMANDS = [
   ( cmd_list, True),
   ( cmd_daemon, True),
   ( cmd_move, False),
-  ( cmd_metrics, False)
+  ( cmd_metrics, False),
+  ( cmd_hours_metrics, False)
 ]
 
 def main():
