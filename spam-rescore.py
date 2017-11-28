@@ -276,6 +276,9 @@ class Msg(object):
   def month(self):
     return '%d-%d' % (self.date.year, self.date.month)
 
+  def day(self):
+    return '%d-%d-%d' % (self.date.year, self.date.month, self.date.day)
+
   def ageMinutes(self):
     if self.date:
       print 'now', datetime.now(), 'date', self.date
@@ -443,7 +446,7 @@ def run_sa(msg, username):
     else:
       raise Exception('no score in sa output "%s"' % output)
 
-def hoursMetricsAccount(imap, counter):
+def hoursMetricsAccount(imap, days):
   imap.select_folder(ARGS.mailbox, readonly=True)
   msgIds = imap.sort('ARRIVAL')
   msgs = hydrateMessages(imap, msgIds)
@@ -451,20 +454,36 @@ def hoursMetricsAccount(imap, counter):
     if not m.date:
       continue
     #print m.id, m.date, m.date.hour, m.header('Subject')
+    counter = days.get(m.day(), None)
+    if counter is None:
+      counter = Counter()
+      days[m.day()] = counter
     counter[m.date.hour] += 1
   
 def cmd_hours_metrics():
-  counter = Counter()
+  days = {}
   for account in CONFIG.accounts:
     info(account.email, ':')
     imap = connectIMAP(account)
     try:
-      hoursMetricsAccount(imap, counter)
+      hoursMetricsAccount(imap, days)
     finally:
       imap.logout()
     # open readonly b/c otherwise messages will be marked as read '\\Seen'
-  for h in range(23):
-    info('%d: %d' % (h, counter[h]))
+  metrics = []
+  for day in days.keys():
+    counter = days[day]
+    tstamp = datetime.strptime(day, '%Y-%m-%d')
+    tstamp += timedelta(hours = 12) # midday
+    tstamp = int(tstamp.strftime('%s'))
+    info('day %s/%d' % (day, tstamp))
+    for h in range(24):
+      info('%d: %d' % (h, counter[h]))
+      metrics.append(('daily.by_hour.%d.count' % h, counter[h], tstamp))
+  if CONFIG.graphiteHost is not None:
+    gc = GraphiteClient(prefix='spam', graphite_server=CONFIG.graphiteHost, graphite_port=CONFIG.graphitePort, system_name='')
+    gc.send_list(metrics)
+
 
 METRICS_PAT = re.compile(r'([\w\.-]+@[\w\.-]+): (\d+) message\(s\)')
 # kludge to get data on move from historical log messages we've sent
@@ -634,7 +653,6 @@ def cmd_received():
   for cnt in hosts.most_common(10):
     info('%s %d' % (cnt[0], cnt[1]))
   info('faith in %d/%d messages' % (faith['val'], len(msgs)))
-  
   
 def cmd_stats():
   msgs = iterMessages(CONFIG.accounts[0])
