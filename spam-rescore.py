@@ -682,7 +682,7 @@ def recordSpamMetrics(messages):
     for m in messages:
       if m.date:
         durations.append(('duration.detect_minutes', m.ageMinutes()))
-        gc.send('daily.%d.count' % m.date.hour, 1)
+        gc.send('daily.by_hour.%d.count' % m.date.hour, 1)
     gc.send_list(durations)
 
 def recordDailyMetrics(emailLog, counts):
