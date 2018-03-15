@@ -184,6 +184,7 @@ class Config(object):
     self.mailhost = data.get('mailhost', None)
     self.graphiteHost = data.get('graphite-host', None)
     self.graphitePort = int(data.get('graphite-port', 2003))
+    self.skipThreshold = float(data.get('skip-threshold', 0))
 
   def getMailhost(self):
     ret = self.mailhost
@@ -861,7 +862,7 @@ def main():
   parser.add_argument('-s', '--since', help='examine messages since date (eg, "10d", "2w", "1m"', \
                       default=datetime.now() - timedelta(days=1), type=parseSince)
   parser.add_argument('--score', help='score filter, skip messages with score <=filter (used in list,rescore,daemon). Default=0.0', \
-                      default=0.0, type=float)
+                      default=None, type=float)
   parser.add_argument('--num', help='maximum number of messages to examine', default=400, type=int)
   parser.add_argument('-m', '--mailbox', help='specify mailbox', default='INBOX')
   parser.add_argument('-l', '--logfile', help='specify log file (in daemon mode)', default=os.environ['HOME'] + '/logs/spam-rescore.log')
@@ -870,6 +871,11 @@ def main():
   parser.add_argument('args', nargs='*', help='command-specific arguments')
   ARGS = parser.parse_args()
   CONFIG = loadConfig(ARGS.config)
+  # order of preference for effective skipThreshold
+  # 1) command line
+  # 2) config
+  if ARGS.score is None:
+    ARGS.score = CONFIG.skipThreshold
   #verbose("got args %s" % str(ARGS))
   cmd = ARGS.command.replace('-', '_')
   func = None
