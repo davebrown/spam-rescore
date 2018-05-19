@@ -723,7 +723,7 @@ def daemonLoop():
     except Exception as e:
       err('Exception in daemon loop', e)
       logging.error(e, exc_info=True)
-      emailLog.critical('DAEMON EXITING: %s' % str(e))
+      emailLog.critical('DAEMON EXITING: %s' % str(e), exc_info=True)
       fail('Exception in daemon loop')
 
 # https://stackoverflow.com/questions/13106221/how-do-i-set-up-a-daemon-with-python-daemon/40536099#40536099  
