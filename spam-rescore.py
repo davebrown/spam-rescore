@@ -181,6 +181,7 @@ class Config(object):
     self.spamcAsUser = str2bool(data.get('spamc-as-user', 'false'))
     self.maxMessageSize = int(data.get('max-message-size', 2048000)) # default ot 2 MB
     self.emailAlert = data.get('email-alert', None)
+    self.emailDailySummary = str2bool(data.get('email-daily-summary', 'true'))
     self.mailhost = data.get('mailhost', None)
     self.graphiteHost = data.get('graphite-host', None)
     self.graphitePort = int(data.get('graphite-port', 2003))
@@ -695,7 +696,8 @@ def recordDailyMetrics(emailLog, counts):
     metrics.append(('daily.by_email.' + email.replace('@', '_').replace('.', '_'), counts[email]))
     total += counts[email]
 
-  emailLog.info(msg)
+  if config.emailDailySummary:
+    emailLog.info(msg)
   metrics.append(('daily.total', total))
 
   if CONFIG.graphiteHost is not None:
