@@ -696,7 +696,7 @@ def recordDailyMetrics(emailLog, counts):
     metrics.append(('daily.by_email.' + email.replace('@', '_').replace('.', '_'), counts[email]))
     total += counts[email]
 
-  if config.emailDailySummary:
+  if CONFIG.emailDailySummary:
     emailLog.info(msg)
   metrics.append(('daily.total', total))
 
