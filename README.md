@@ -6,6 +6,9 @@
 
 In practice, many *near spam* messages (those with spam scores close to, but not above, the default threshold of `5.0` for SpamAssassin) will get pushed over the threshold a short time later, after the various blacklist tests have been updated. Hopefully, before end users ever see their inbox marred by a false negative.
 
+![spam rescore metrics](https://moonspider.com/spam-rescore-metrics.png "spam rescore metrics")
+<p align="center">Daily spam-rescore metrics for an installation with 2 accounts</p>
+
 ## Mechanics
 
 * Python script
@@ -15,6 +18,7 @@ In practice, many *near spam* messages (those with spam scores close to, but not
 * IMAP-based, will work with all common IMAP servers
 * Supports multiple accounts
 * Can be run remotely from IMAP host
+* Optionally emit metrics on spam checks to Graphite / Grafana
 
 ## Setup
 
@@ -33,6 +37,12 @@ You will want to set up a `$HOME/.spam-config.yaml` file in the home directory o
 max-message-size: 4096000
 # spamc arg: -u <username> (run as <username>, usually to pick up their Bayes filter)
 spamc-as-user: true
+# poll interval, in seconds. default = 5 minutes
+poll-seconds: 120
+# email log on CRITICAL messages, and daily stats summary of activity
+email-alert: alerts@example.com
+# SMTP host to use when delivering above email
+mailhost: localhost
 accounts:
   - email: test@example.com
     password: 's3cr3t'
@@ -40,9 +50,13 @@ accounts:
     password: s00p3rs3cr3t
     host: imap.example.com
     verify-ssl: false
+graphiteHost: 10.1.2.3
+graphitePort: 2003
 ```
 
 `.spam-config.yaml` can scan multiple accounts, as above. `email` and `password` are the required fields. Most fields are self-explanatory. `verify-ssl: false` disables certificate chain validation. Not recommended, but necessary if you're using a self-signed cert.
+
+If you're running a service that can receive metrics in graphite format, specifiy `graphiteHost` and `graphitePort` in the config file.
 
 ## Usage
 
