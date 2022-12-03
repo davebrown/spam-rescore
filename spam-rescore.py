@@ -235,6 +235,8 @@ def parseSince(s):
       delta = timedelta(days=num)
     elif units == 'w':
       delta = timedelta(weeks=num)
+    elif units == 'm':
+      delta = timedelta(minutes=num)
     else:
       delta = timedelta(weeks=4 * num)
     return datetime.now() + delta
@@ -422,15 +424,15 @@ def cmd_list():
     ids = [ m.id for m in msgs ]
     table = Texttable()
     table.set_deco(Texttable.HEADER | Texttable.HLINES)
-    table.header(['Date', 'ID', 'Score', 'From', 'Subject', 'Flags'])
-    table.set_cols_width([20, 10, 6, 30, 30, 12])
+    table.header(['Date', 'ID', 'Score', 'From', 'Subject', 'Spam-status', 'Flags'])
+    table.set_cols_width([20, 10, 6, 25, 25, 40, 12])
     table.set_precision(1)
     for m in msgs:
       if m.score is not None and m.score < ARGS.score:
         if ARGS.verbose:
           verbose('skipping message id=%d date=%s score=%s below threshold of %s' % (m.id, m.date, m.scoreStr(), str(ARGS.score)))
         continue
-      table.add_row([m.date, m.id, m.scoreStr(), m.headers.get('From', None), m.headers.get('Subject', None), m.flags ])
+      table.add_row([m.date, m.id, m.scoreStr(), m.headers.get('From', None), m.headers.get('Subject', None), m.headers.get('X-Spam-Status', None), m.flags ])
     info(table.draw())
   finally:
     imap.logout()
@@ -461,7 +463,7 @@ def rescoreAccount(account):
       subject = m.header('Subject')
       if newScore > m.score:
         scoreUp += 1
-        if newScore > 5.0:
+        if newScore > 4.0:
           newSpam += 1
           spamIds.append(m.id)
           info('new spam found, score changed %s -> %.1f for %s/"%s"' % (m.scoreStr(), newScore, m.id, subject))
