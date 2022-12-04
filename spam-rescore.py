@@ -58,13 +58,13 @@ class TermOutput(Output):
   TTY = sys.stdout.isatty()
 
   def info(self, *args):
-    msg = ' '.join([str(e) for e in args])
+    msg = ' '.join([e.encode('utf8') for e in args])
     sys.stdout.write(msg)
     sys.stdout.write('\n')
     sys.stdout.flush()
 
   def warn(self, *args):
-    msg = ' '.join([str(e) for e in args])
+    msg = ' '.join([e.encode('utf8') for e in args])
     if self.TTY:
       cprint(msg, 'yellow', file=sys.stderr, attrs=['bold'], end='\n')
     else:
@@ -72,7 +72,7 @@ class TermOutput(Output):
       sys.stderr.write('\n')
 
   def err(self, *args):
-    msg = ' '.join([str(e) for e in args])
+    msg = ' '.join([e.encode('utf8') for e in args])
     if self.TTY:
       cprint(msg, 'red', attrs=['bold'], file=sys.stderr, end='\n')
     else:
@@ -80,7 +80,7 @@ class TermOutput(Output):
       sys.stderr.write('\n')
 
   def verbose(self, *args):
-    msg = ' '.join([str(e) for e in args])
+    msg = ' '.join([e.encode('utf8') for e in args])
     if not ARGS.verbose: return
     if self.TTY:
       cprint(msg, 'grey', attrs=['bold'], end='\n')
