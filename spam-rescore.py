@@ -546,18 +546,29 @@ def cmd_list():
     msgs = iterMessages(imap)
     msgs = sorted(msgs, key=lambda m: m.date)
     ids = [ m.id for m in msgs ]
+
     table = Texttable()
     table.set_deco(Texttable.HEADER | Texttable.HLINES)
     table.header(['Date', 'ID', 'Score', 'From', 'Subject', 'Spam-status', 'Flags', 'age (mins)'])
-    table.set_cols_width([20, 10, 6, 25, 25, 40, 12, 10])
+    col_widths = [20, 10, 6, 25, 25, 40, 12, 10]
+    table.set_cols_width(col_widths)
     table.set_precision(1)
     for m in msgs:
       if m.score is not None and m.score < ARGS.score:
         if ARGS.verbose:
           verbose('skipping message id=%d date=%s score=%s below threshold of %s' % (m.id, m.date, m.scoreStr(), str(ARGS.score)))
         continue
-      table.add_row([m.date, m.id, m.scoreStr(), m.headers.get('From', None), m.headers.get('Subject', None), m.headers.get('X-Spam-Status', None), m.flags, m.ageMinutes() ])
-    info(table.draw())
+      row = [m.date, m.id, m.scoreStr(), m.headers.get('From', None), m.headers.get('Subject', None), m.headers.get('X-Spam-Status', None), m.flags, m.ageMinutes() ]
+
+      def truncate_text(text, max_width):
+        text = str(text)
+        if len(text) > max_width:
+          return text[:max_width - 3] + '...'  # Truncate and add ellipsis
+        return text
+
+      row = [truncate_text(cell, col_widths[i]) for i, cell in enumerate(row)]
+      table.add_row(row)
+    print(table.draw())
   finally:
     imap.logout()
   
