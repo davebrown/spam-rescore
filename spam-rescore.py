@@ -58,13 +58,13 @@ class TermOutput(Output):
   TTY = sys.stdout.isatty()
 
   def info(self, *args):
-    msg = ' '.join([str(e) for e in args])
+    msg = ' '.join([e.encode('utf8') for e in args])
     sys.stdout.write(msg)
     sys.stdout.write('\n')
     sys.stdout.flush()
 
   def warn(self, *args):
-    msg = ' '.join([str(e) for e in args])
+    msg = ' '.join([e.encode('utf8') for e in args])
     if self.TTY:
       cprint(msg, 'yellow', file=sys.stderr, attrs=['bold'], end='\n')
     else:
@@ -72,7 +72,7 @@ class TermOutput(Output):
       sys.stderr.write('\n')
 
   def err(self, *args):
-    msg = ' '.join([str(e) for e in args])
+    msg = ' '.join([e.encode('utf8') for e in args])
     if self.TTY:
       cprint(msg, 'red', attrs=['bold'], file=sys.stderr, end='\n')
     else:
@@ -80,7 +80,7 @@ class TermOutput(Output):
       sys.stderr.write('\n')
 
   def verbose(self, *args):
-    msg = ' '.join([str(e) for e in args])
+    msg = ' '.join([e.encode('utf8') for e in args])
     if not ARGS.verbose: return
     if self.TTY:
       cprint(msg, 'grey', attrs=['bold'], end='\n')
@@ -254,6 +254,8 @@ def parseSince(s):
       delta = timedelta(days=num)
     elif units == 'w':
       delta = timedelta(weeks=num)
+    elif units == 'm':
+      delta = timedelta(minutes=num)
     else:
       delta = timedelta(weeks=4 * num)
     return datetime.now() + delta
@@ -541,15 +543,15 @@ def cmd_list():
     ids = [ m.id for m in msgs ]
     table = Texttable()
     table.set_deco(Texttable.HEADER | Texttable.HLINES)
-    table.header(['Date', 'ID', 'Score', 'From', 'Subject', 'Flags', 'age (mins)'])
-    table.set_cols_width([20, 10, 6, 30, 30, 12, 10])
+    table.header(['Date', 'ID', 'Score', 'From', 'Subject', 'Spam-status', 'Flags', 'age (mins)'])
+    table.set_cols_width([20, 10, 6, 25, 25, 40, 12, 10])
     table.set_precision(1)
     for m in msgs:
       if m.score is not None and m.score < ARGS.score:
         if ARGS.verbose:
           verbose('skipping message id=%d date=%s score=%s below threshold of %s' % (m.id, m.date, m.scoreStr(), str(ARGS.score)))
         continue
-      table.add_row([m.date, m.id, m.scoreStr(), m.headers.get('From', None), m.headers.get('Subject', None), m.flags, m.ageMinutes() ])
+      table.add_row([m.date, m.id, m.scoreStr(), m.headers.get('From', None), m.headers.get('Subject', None), m.headers.get('X-Spam-Status', None), m.flags, m.ageMinutes() ])
     info(table.draw())
   finally:
     imap.logout()

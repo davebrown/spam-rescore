@@ -18,6 +18,7 @@ In practice, many *near spam* messages (those with spam scores close to, but not
 * IMAP-based, will work with all common IMAP servers
 * Supports multiple accounts
 * Can be run remotely from IMAP host
+* Optionally emit metrics on spam checks to Graphite / Grafana
 
 ## Setup
 
@@ -49,9 +50,13 @@ accounts:
     password: s00p3rs3cr3t
     host: imap.example.com
     verify-ssl: false
+graphiteHost: 10.1.2.3
+graphitePort: 2003
 ```
 
 `.spam-config.yaml` can scan multiple accounts, as above. `email` and `password` are the required fields. Most fields are self-explanatory. `verify-ssl: false` disables certificate chain validation. Not recommended, but necessary if you're using a self-signed cert.
+
+If you're running a service that can receive metrics in graphite format, specifiy `graphiteHost` and `graphitePort` in the config file.
 
 ## Usage
 
