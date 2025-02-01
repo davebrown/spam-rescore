@@ -28,6 +28,7 @@ import errno
 from graphitesend import GraphiteClient
 
 def catArgs(*args):
+  args = [item.decode('utf-8') if isinstance(item, bytes) else item for item in args]
   return ' '.join([str(e) for e in args])
 
 def mkdirs(path):
@@ -58,13 +59,13 @@ class TermOutput(Output):
   TTY = sys.stdout.isatty()
 
   def info(self, *args):
-    msg = ' '.join([e.encode('utf8') for e in args])
+    msg = catArgs(args)
     sys.stdout.write(msg)
     sys.stdout.write('\n')
     sys.stdout.flush()
 
   def warn(self, *args):
-    msg = ' '.join([e.encode('utf8') for e in args])
+    msg = catArgs(args)
     if self.TTY:
       cprint(msg, 'yellow', file=sys.stderr, attrs=['bold'], end='\n')
     else:
@@ -72,7 +73,7 @@ class TermOutput(Output):
       sys.stderr.write('\n')
 
   def err(self, *args):
-    msg = ' '.join([e.encode('utf8') for e in args])
+    msg = catArgs(args)
     if self.TTY:
       cprint(msg, 'red', attrs=['bold'], file=sys.stderr, end='\n')
     else:
@@ -80,7 +81,7 @@ class TermOutput(Output):
       sys.stderr.write('\n')
 
   def verbose(self, *args):
-    msg = ' '.join([e.encode('utf8') for e in args])
+    msg = catArgs(args)
     if not ARGS.verbose: return
     if self.TTY:
       cprint(msg, 'grey', attrs=['bold'], end='\n')
@@ -88,6 +89,9 @@ class TermOutput(Output):
       sys.stdout.write(msg)
       sys.stdout.write('\n')
       sys.stdout.flush()
+
+  def debug(self, *args):
+    self.verbose(args)
   
 
 class LogOutput(Output):
@@ -136,6 +140,7 @@ def verbose(*args):
 
 def fail(*args):
   global OUTPUT
+  args = catArgs(args)
   msg = ' '.join([str(e) for e in args])
   OUTPUT.err('%s\nexiting...' % msg)
   sys.exit(1)
@@ -270,7 +275,7 @@ class Msg(object):
     if self.score is None:
       warn('no score on msg id=%s header="%s"' % (self.id, spamHeader))
     if dateHeader:
-      debug(f'Msg CTOR parsing date header type {type(dateHeader)} value {dateHeader}')
+      verbose(f'Msg CTOR parsing date header type {type(dateHeader)} value {dateHeader}')
       if isinstance(dateHeader, datetime):
         self.date = dateHeader
       elif isinstance(dateHeader, str):
