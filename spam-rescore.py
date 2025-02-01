@@ -420,7 +420,7 @@ def hydrateMessages(imap, messageIds, additionalFields=[]):
     msg = Msg(msgId, spamHeader, dateHeader, headers)
     msg['headers'] = rawHeaders
     for f in additionalFields:
-      msg[f.lower()] = data[f]
+      msg[f.lower()] = data[f.encode('utf-8')]
     msgs.append(msg)
 
   msgDict = { m.id: m for m in msgs }
@@ -448,7 +448,7 @@ SA_SCORE_PAT = re.compile(r'^([+-]?\d+\.?\d*)/.*')
 def run_sa(msg, username):
   global CONFIG
   with TemporaryFile(mode='r+b', suffix='.eml', prefix='spam-rescore') as tf:
-    tf.write(msg['headers'])
+    tf.write(msg['headers'].encode('utf-8'))
     tf.write(msg['body[text]'])
     tf.seek(0)
     try:
@@ -460,8 +460,9 @@ def run_sa(msg, username):
       #verbose('running sa as:', args)
       output = check_output(args, stdin=tf, stderr=STDOUT)
     except CalledProcessError as cpe:
-      output = cpe.output.replace('\n', '')
+      output = cpe.output.decode('utf-8').replace('\n', '')
       verbose('sa returned code=%d body="%s" for message %s' % (cpe.returncode, output, msg.id))
+    if isinstance(output, bytes): output = output.decode('utf-8')
     m = SA_SCORE_PAT.match(output)
     if m:
       score = float(m.group(1))
@@ -600,7 +601,7 @@ def rescoreAccount(account):
         continue
       newScore = run_sa(m, account.username)
       subject = m.header('Subject')
-      if newScore > m.score:
+      if m.score is None or newScore > m.score:
         scoreUp += 1
         if newScore > CONFIG.spamThreshold:
           newSpam += 1
