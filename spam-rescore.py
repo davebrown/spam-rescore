@@ -546,6 +546,10 @@ def cmd_list():
   try:
     msgs = iterMessages(imap)
     msgs = sorted(msgs, key=lambda m: m.date)
+    total = len(msgs)
+    count = 0
+    if ARGS.verbose:
+      verbose('got %d messages in mailbox %s' % (total, ARGS.mailbox))
     ids = [ m.id for m in msgs ]
 
     table = Texttable()
@@ -559,6 +563,7 @@ def cmd_list():
         if ARGS.verbose:
           verbose('skipping message id=%d date=%s score=%s below threshold of %s' % (m.id, m.date, m.scoreStr(), str(ARGS.score)))
         continue
+      count += 1
       row = [m.date, m.id, m.scoreStr(), m.headers.get('From', None), m.headers.get('Subject', None), m.headers.get('X-Spam-Status', None), m.flags, m.ageMinutes() ]
 
       def truncate_text(text, max_width):
@@ -570,6 +575,7 @@ def cmd_list():
       row = [truncate_text(cell, col_widths[i]) for i, cell in enumerate(row)]
       table.add_row(row)
     print(table.draw())
+    info('found %d/%d message(s) match criteria: >= %s in mailbox %s' % (count, total, "{:.1f}".format(ARGS.score), ARGS.mailbox))
   finally:
     imap.logout()
   
