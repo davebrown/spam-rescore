@@ -6,3 +6,5 @@ pyYAML
 texttable
 python-daemon
 graphitesend
+requests
+ollama

@@ -2,6 +2,8 @@
 
 import sys
 import os
+import json
+import requests
 
 from datetime import datetime, timedelta
 import argparse
@@ -26,6 +28,7 @@ import daemon
 from daemon import pidfile
 import errno
 from graphitesend import GraphiteClient
+from ollama import Client
 
 def catArgs(*args):
   args = [item.decode('utf-8') if isinstance(item, bytes) else item for item in args]
@@ -856,6 +859,185 @@ def cmd_daemon():
 
     daemonLoop()
 
+def ask_ollama_generate(message_text):
+  """Ask Ollama if a message is spam"""
+
+  system = f"""You are a spam detection assistant. Analyze this email and determine if it's spam.
+  You must respond with ONLY a JSON object in this exact format:
+  {{"is_spam": true or false, "confidence": 0.0 to 1.0, "reasoning": "brief explanation"}}
+  
+  DO NOT include any other text, markdown, or formatting in your response.
+  DO NOT include any other fields in the JSON.
+  DO NOT include any preamble or explanation.
+  The explanation should be concise and focus on the key indicators of spam.
+  If you cannot determine if it's spam, return {{"is_spam": false, "confidence": 0.0, "reasoning": "unable to determine"}}.
+  """ 
+
+  prompt_v1 = f"""Email to analyze:
+  {message_text[:2000]}
+  """
+  
+  payload = {
+   "model": "llama3",
+   "temperature": 0.1,
+   "system": system,
+   "prompt": system + "\n" + prompt_v1,
+   "stream": False,
+   "format": "json"
+  }
+  
+  #print(json.dumps(payload, indent=2))
+  #sys.exit(1)
+  response = requests.post('http://localhost:11434/api/generate',
+                           headers={'Content-Type': 'application/json'},
+                           json = payload)
+  try:
+#    print("Parsing Ollama response:", response.text)
+    result = json.loads(response.json()['response'])
+# print("======================")
+#    print(json.dumps(result, indent=2))
+#    sys.exit(1)
+    return result
+  except (json.JSONDecodeError, KeyError) as e:
+    warn(f"Error parsing Ollama response: {e}, response: {response.text}")
+    return None
+
+from ollama import Client
+
+def ask_ollama_v2(message_text):
+    """Ask Ollama if a message is spam"""
+    
+    # Create Ollama client
+    client = Client(host='http://localhost:11434')
+    
+    # Simplified prompt
+    prompt = (
+        "You are a spam detection assistant. Analyze this email and output exactly this JSON:\n"
+        "{\"is_spam\": true/false, \"confidence\": 0.0-1.0, \"reasoning\": \"brief explanation\"}\n\n"
+        f"Email to analyze:\n{message_text}"
+    )
+
+    try:
+        # Generate response using the client
+        response = client.generate(
+            model='llama3',
+            prompt=prompt,
+            format='json'
+        )
+        print("Parsing Ollama response:", response)
+        if ARGS.verbose:
+            print("\nOllama response:", response)
+            
+
+        result = json.loads(response['response'])
+        
+        # Validate required fields
+        required = ['is_spam', 'confidence', 'reasoning']
+        if not all(k in result for k in required):
+            warn(f"Missing required fields in response: {result}")
+            return None
+            
+        return result
+        
+    except Exception as e:
+        warn(f"Error processing Ollama response: {str(e)}")
+        return None
+
+def ask_ollama_chat(message_text):
+    #message_text = "hello world"  # FIXME: remove this line, just for testing
+    messages = [
+        {"role": "system", "content": "You are a strict JSON-generating assistant. Never speak. Only return JSON in this required format: {\"is_spam\": true or false, \"confidence\": float between 0.0 and 1.0, \"reasoning\": \"brief explanation\"}" },
+        {"role": "user", "content": f"""Analyze the following email and classify it as spam or not.
+
+Respond ONLY with a valid JSON object:
+{{"is_spam": true or false, "confidence": float between 0.0 and 1.0, "reasoning": "brief explanation"}}
+
+If unsure, respond with:
+{{"is_spam": false, "confidence": 0.0, "reasoning": "unable to determine"}}
+
+Email to analyze:
+{message_text[:2000]}
+"""}
+    ]
+
+    #print(f"sending messages {json.dumps(messages, indent=2)}")
+    #sys.exit(1)
+
+    response = requests.post(
+        'http://localhost:11434/api/chat',
+        headers={'Content-Type': 'application/json'},
+        json={
+            "model": "llama3",
+            "messages": messages,
+            "temperature": 0.1,
+            "stream": False
+        }
+    )
+
+    data = response.json()
+    print(data)
+    content = json.loads(data["message"]["content"])
+    print(f"{type(content)} content: {content}")
+    #sys.exit(1)
+    return content
+
+def cmd_llm():
+  info('======= OLLAMA SPAM CHECK ========')
+  imap = connectIMAP(CONFIG.accounts[0])
+  # open readonly to avoid marking messages as read
+  imap.select_folder(ARGS.mailbox, readonly=True)
+  
+  try:
+    msgs = iterMessages(imap, ['BODY[TEXT]'])
+    total = len(msgs)
+    spam_count = 0
+    ham_count = 0
+    
+    for m in msgs:
+      if m.score is not None and m.score < ARGS.score:
+        if ARGS.verbose:
+          verbose(f'skipping message id={m.id} (score {m.scoreStr()} below threshold {ARGS.score})')
+        continue
+          
+      # Construct full message text
+      message_text = f"""
+From: {m.headers.get('From', 'Unknown')}
+Subject: {m.headers.get('Subject', 'No Subject')}
+Date: {m.date}
+
+{m['body[text]']}
+      """
+      
+      # Get Ollama's analysis
+      result = ask_ollama_chat(message_text)
+      
+      if result:
+        status = "SPAM" if result['is_spam'] else "HAM" 
+        if result['is_spam']:
+          spam_count += 1
+        else:
+          ham_count += 1
+          
+        print(f"""
+Message ID: {m.id}
+From: {m.headers.get('From', 'Unknown')}
+Status: {status}
+Confidence: {result['confidence']:.2f}
+SA Score: {m.scoreStr()}
+Subject: {m.headers.get('Subject', 'No Subject')}
+Reasoning: {result['reasoning']}
+------------------------""")
+      
+    print(f"""
+Summary:
+Total messages analyzed: {total}
+Spam detected: {spam_count}
+Ham detected: {ham_count}
+    """)
+        
+  finally:
+    imap.logout()
+
 def cmd_hack():
   #account = CONFIG.accounts[0]
   #imap = connectIMAP(account)
@@ -905,11 +1087,12 @@ COMMANDS = [
   ( cmd_stats, True),
   ( cmd_hack, False),
   ( cmd_list, True),
+  ( cmd_llm, True),
   ( cmd_daemon, True),
   ( cmd_move, False),
   ( cmd_metrics, False),
   ( cmd_hours_metrics, False)
-]
+ ]
 
 def main():
   global ARGS
@@ -963,10 +1146,11 @@ def main():
     func()
   except Exception as e:
     err('%s raised exception %s' % (cmd, str(e)))
+    logging.error('Exception in command %s: %s', cmd, str(e), exc_info=True)
     if ARGS.verbose:
       traceback.print_exc()
     sys.exit(1)
     
 if __name__ == '__main__':
   main()
-    
+
