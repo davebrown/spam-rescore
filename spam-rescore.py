@@ -576,6 +576,39 @@ def cmd_list():
       table.add_row(row)
     print(table.draw())
     info('found %d/%d message(s) match criteria: >= %s in mailbox %s' % (count, total, "{:.1f}".format(ARGS.score), ARGS.mailbox))
+   # Add score histogram
+    buckets = {
+        "<=0.0": 0,
+        "0-1": 0,
+        "1-2": 0,
+        "2-3": 0,
+        "3-4": 0,
+        "4-5": 0,
+        ">5": 0
+    }
+
+    for m in msgs:
+        if m.score is None:
+            continue
+        if m.score <= 0.0:
+            buckets["<=0.0"] += 1
+        elif m.score <= 1.0:
+            buckets["0-1"] += 1
+        elif m.score <= 2.0:
+            buckets["1-2"] += 1
+        elif m.score <= 3.0:
+            buckets["2-3"] += 1
+        elif m.score <= 4.0:
+            buckets["3-4"] += 1
+        elif m.score <= 5.0:
+            buckets["4-5"] += 1
+        else:
+            buckets[">5"] += 1
+
+    info("\nScore distribution:")
+    for bucket, count in buckets.items():
+        info(f"{bucket:6}: {count:3d} {'#' * min(count, 50)}")
+
   finally:
     imap.logout()
   
