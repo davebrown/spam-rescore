@@ -190,7 +190,7 @@ class Config(object):
     self.mailhost = data.get('mailhost', None)
     self.graphiteHost = data.get('graphite-host', None)
     self.graphitePort = int(data.get('graphite-port', 2003))
-    self.skipThreshold = float(data.get('skip-threshold', 0))
+    self.skipThreshold = float(data.get('skip-threshold', 0.0))
     self.spamThreshold = float(data.get('spam-threshold', 5.0))
 
   def getMailhost(self):
@@ -647,6 +647,9 @@ def rescoreAccount(account):
           spamIds.append(m.id)
           info('new spam found, score changed %s -> %.1f for %s/"%s"' % (m.scoreStr(), newScore, m.id, subject))
           spamMessages.append(m)
+        else:
+          info('score increased but not spam, score changed %s -> %.1f for %s/"%s"' % (m.scoreStr(), newScore, m.id, subject))
+          
       elif newScore < m.score:
         scoreDown += 1
         if m.score > 5.0 and newScore < CONFIG.spamThreshold:
