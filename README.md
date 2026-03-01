@@ -44,12 +44,15 @@ email-alert: alerts@example.com
 # SMTP host to use when delivering above email
 mailhost: localhost
 accounts:
+  # Use real credentials only in your local private file; never commit them.
   - email: test@example.com
-    password: 's3cr3t'
+    password: '...'
+    junk-folder: Junk
   - email: test2@example.com
-    password: s00p3rs3cr3t
+    password: ...
     host: imap.example.com
     verify-ssl: false
+    junk-folder: Spam
 graphiteHost: 10.1.2.3
 graphitePort: 2003
 ```
@@ -57,6 +60,10 @@ graphitePort: 2003
 `.spam-config.yaml` can scan multiple accounts, as above. `email` and `password` are the required fields. Most fields are self-explanatory. `verify-ssl: false` disables certificate chain validation. Not recommended, but necessary if you're using a self-signed cert.
 
 If you're running a service that can receive metrics in graphite format, specifiy `graphiteHost` and `graphitePort` in the config file.
+
+`junk-folder` is optional per account and defaults to `Junk`.
+
+Never commit real credentials to git. Keep `.spam-config.yaml` local/private and use placeholder values in documentation.
 
 ## Usage
 
@@ -88,6 +95,12 @@ optional arguments:
 
 analyze and re-evaluate spam profile of IMAP mailboxes
 ```
+
+To export Junk-folder counts by day for all configured accounts (last 30 days):
+
+**`$ ./spam-rescore.py --out junk-counts.xlsx junk-report`**
+
+This command connects to each configured account, reads its configured `junk-folder`, counts messages per day over the last 30 days, and writes an XLSX file with one row per day and one column per account.
 
 After setup, you can simply kick the tires on IMAP connectivity by listing an IMAP folder (say, `probably-spam`) for the last 2 weeks:
 

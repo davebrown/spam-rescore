@@ -8,3 +8,4 @@ python-daemon
 graphitesend
 requests
 ollama
+openpyxl

@@ -11,6 +11,8 @@ import traceback
 from termcolor import cprint
 import imapclient
 from imapclient import IMAPClient
+from openpyxl import Workbook
+from openpyxl.chart import LineChart, Reference
 import ssl
 from email.parser import Parser as EmailParser
 import re
@@ -166,6 +168,7 @@ class Account(object):
     self.password = _(data, 'password')
     self.host = _(data, 'host', False)
     self.spamFolder = data.get('spam-folder', 'probably-spam')
+    self.junkFolder = data.get('junk-folder', 'Junk')
     self.verifySSL = data.get('verify-ssl', True)
     account = self.email.split('@')
     if len(account) != 2:
@@ -175,8 +178,8 @@ class Account(object):
       self.host = account[1]
 
   def __str__(self):
-    return '{Account %s username=%s host=%s spamFolder=%s check-ssl=%s}' % (
-      self.email, self.username, self.host, self.spamFolder, self.verifySSL)
+    return '{Account %s username=%s host=%s spamFolder=%s junkFolder=%s check-ssl=%s}' % (
+      self.email, self.username, self.host, self.spamFolder, self.junkFolder, self.verifySSL)
   
 class Config(object):
 
@@ -543,7 +546,7 @@ def cmd_metrics():
   #gc.send_list(metrics)
 
 def cmd_list():
-  imap = connectIMAP(CONFIG.accounts[0])
+  imap = connectIMAP(CONFIG.accounts[1])
   # open readonly b/c otherwise messages will be marked as read '\\Seen'
   imap.select_folder(ARGS.mailbox, readonly=True)
   try:
@@ -751,6 +754,102 @@ def cmd_stats():
 
   info('monthly spam score stats on %s\n%s' % (ARGS.mailbox, table.draw()))
 
+def writeJunkReportXlsx(outPath, days, accountColumns, perAccountCounts):
+  workbook = Workbook()
+  sheet = workbook.active
+  sheet.title = 'Junk Counts'
+
+  headers = [col[0] for col in accountColumns]
+  sheet.append(['Date'] + headers + ['Total'])
+
+  for day in days:
+    dayStr = day.strftime('%Y-%m-%d')
+    row = [day]
+    total = 0
+    for _, accountEmail in accountColumns:
+      count = perAccountCounts.get(accountEmail, {}).get(dayStr, 0)
+      total += count
+      row.append(count)
+    row.append(total)
+    sheet.append(row)
+
+  for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row, min_col=1, max_col=1):
+    row[0].number_format = 'yyyy-mm-dd'
+
+  if len(days) > 0 and len(accountColumns) > 0:
+    chart = LineChart()
+    chart.title = 'Junk Messages by Day (Last 30 Days)'
+    chart.y_axis.title = 'Messages'
+    chart.x_axis.title = 'Date'
+
+    data = Reference(
+      sheet,
+      min_col=2,
+      max_col=1 + len(accountColumns),
+      min_row=1,
+      max_row=sheet.max_row
+    )
+    categories = Reference(sheet, min_col=1, min_row=2, max_row=sheet.max_row)
+    chart.add_data(data, titles_from_data=True)
+    chart.set_categories(categories)
+    chart.height = 10
+    chart.width = 18
+    sheet.add_chart(chart, 'H2')
+
+  workbook.save(outPath)
+
+def junkCountsForAccount(account, startDate, endDate):
+  dayCounts = Counter()
+  imap = connectIMAP(account)
+  try:
+    mailbox = account.junkFolder
+    if not imap.folder_exists(mailbox):
+      warn('%s: folder "%s" does not exist, reporting zeros' % (account.email, mailbox))
+      return dayCounts
+
+    imap.select_folder(mailbox, readonly=True)
+    since = datetime.combine(startDate, datetime.min.time())
+    messageIds = imap.search(['SINCE', since])
+    info('have %d messages in folder %s' % (len(messageIds), mailbox))
+    if len(messageIds) == 0:
+      return dayCounts
+
+    fetched = imap.fetch(messageIds, ['INTERNALDATE'])
+    for _, data in fetched.items():
+      msgDate = data.get(b'INTERNALDATE', None)
+      if not msgDate:
+        continue
+      msgDay = msgDate.date()
+      if startDate <= msgDay <= endDate:
+        dayCounts[msgDay.strftime('%Y-%m-%d')] += 1
+    info('%s: %d message(s) in %s since %s' % (account.email, len(fetched), mailbox, startDate.strftime('%Y-%m-%d')))
+  finally:
+    imap.logout()
+  return dayCounts
+
+def cmd_junk_report():
+  daysBack = 30
+  endDate = datetime.now().date()
+  startDate = endDate - timedelta(days=daysBack - 1)
+  days = [startDate + timedelta(days=i) for i in range(daysBack)]
+
+  perAccountCounts = {}
+  accountColumns = []
+  usernamesUsed = Counter()
+  for account in CONFIG.accounts:
+    info('collecting junk stats for %s from folder %s' % (account.email, account.junkFolder))
+    dayCounts = junkCountsForAccount(account, startDate, endDate)
+    perAccountCounts[account.email] = dayCounts
+
+    usernamesUsed[account.username] += 1
+    displayName = account.username
+    if usernamesUsed[account.username] > 1:
+      displayName = '%s_%d' % (account.username, usernamesUsed[account.username])
+    accountColumns.append((displayName, account.email))
+
+  writeJunkReportXlsx(ARGS.out, days, accountColumns, perAccountCounts)
+  info('wrote junk report to %s' % ARGS.out)
+
 def recordSpamMetrics(messages):
   if CONFIG.graphiteHost is not None:
     gc = GraphiteClient(prefix='spam', graphite_server=CONFIG.graphiteHost, graphite_port=CONFIG.graphitePort, system_name='')
@@ -945,6 +1044,7 @@ def ask_ollama_v2(message_text):
 
 def ask_ollama_chat(message_text):
     #message_text = "hello world"  # FIXME: remove this line, just for testing
+    print(f"truncating message text from {len(message_text)}..")
     messages = [
         {"role": "system", "content": "You are a strict JSON-generating assistant. Never speak. Only return JSON in this required format: {\"is_spam\": true or false, \"confidence\": float between 0.0 and 1.0, \"reasoning\": \"brief explanation\"}" },
         {"role": "user", "content": f"""Analyze the following email and classify it as spam or not.
@@ -956,7 +1056,7 @@ If unsure, respond with:
 {{"is_spam": false, "confidence": 0.0, "reasoning": "unable to determine"}}
 
 Email to analyze:
-{message_text[:2000]}
+{message_text[:8000]}
 """}
     ]
 
@@ -1085,6 +1185,7 @@ COMMANDS = [
   (cmd_rescore, True),
   ( cmd_received, False),
   ( cmd_stats, True),
+  ( cmd_junk_report, True),
   ( cmd_hack, False),
   ( cmd_list, True),
   ( cmd_llm, True),
@@ -1121,6 +1222,7 @@ def main():
                       default=None, type=float)
   parser.add_argument('--num', help='maximum number of messages to examine', default=400, type=int)
   parser.add_argument('-m', '--mailbox', help='specify mailbox', default='INBOX')
+  parser.add_argument('--out', help='output xlsx path (used by junk-report)', default='junk-counts.xlsx')
   parser.add_argument('-l', '--logfile', help='specify log file (in daemon mode)', default=os.environ['HOME'] + '/logs/spam-rescore.log')
   parser.add_argument('-n', '--dry-run', help='dry run; do not move/delete messages', default=False, action='store_true')
   parser.add_argument('command', help=validCommands)
