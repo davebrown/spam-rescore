@@ -12,7 +12,7 @@ from termcolor import cprint
 import imapclient
 from imapclient import IMAPClient
 from openpyxl import Workbook
-from openpyxl.chart import LineChart, Reference
+from openpyxl.chart import ScatterChart, Reference, Series
 import ssl
 from email.parser import Parser as EmailParser
 import re
@@ -777,21 +777,40 @@ def writeJunkReportXlsx(outPath, days, accountColumns, perAccountCounts):
     row[0].number_format = 'yyyy-mm-dd'
 
   if len(days) > 0 and len(accountColumns) > 0:
-    chart = LineChart()
+    chart = ScatterChart()
+    chart.scatterStyle = 'lineMarker'
     chart.title = 'Junk Messages by Day (Last 30 Days)'
-    chart.y_axis.title = 'Messages'
-    chart.x_axis.title = 'Date'
+    chart.y_axis.title = 'Count'
+    chart.y_axis.number_format = '0'
+    chart.y_axis.tickLblPos = 'nextTo'
+    chart.y_axis.majorTickMark = 'out'
+    chart.y_axis.axPos = 'l'
+    chart.y_axis.delete = False
 
-    data = Reference(
-      sheet,
-      min_col=2,
-      max_col=1 + len(accountColumns),
-      min_row=1,
-      max_row=sheet.max_row
-    )
-    categories = Reference(sheet, min_col=1, min_row=2, max_row=sheet.max_row)
-    chart.add_data(data, titles_from_data=True)
-    chart.set_categories(categories)
+    chart.x_axis.title = 'Date'
+    chart.x_axis.number_format = 'yyyy-mm-dd'
+    chart.x_axis.majorUnit = 7
+    chart.x_axis.majorGridlines = None
+    chart.x_axis.tickLblPos = 'nextTo'
+    chart.x_axis.majorTickMark = 'out'
+    chart.x_axis.axPos = 'b'
+    chart.x_axis.delete = False
+    chart.x_axis.axId = 500
+    chart.x_axis.crossAx = 100
+
+    chart.y_axis.axId = 100
+    chart.y_axis.crossAx = 500
+
+    xvalues = Reference(sheet, min_col=1, min_row=2, max_row=sheet.max_row)
+    for col in range(2, 2 + len(accountColumns)):
+      yvalues = Reference(sheet, min_col=col, min_row=1, max_row=sheet.max_row)
+      series = Series(yvalues, xvalues, title_from_data=True)
+      series.smooth = False
+      series.marker.symbol = 'circle'
+      series.marker.size = 6
+      chart.series.append(series)
+
+    chart.smooth = False
     chart.height = 10
     chart.width = 18
     sheet.add_chart(chart, 'H2')
